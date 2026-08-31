@@ -1,0 +1,63 @@
+{
+  "name": "needle-pi-ai-provider",
+  "version": "0.1.0",
+  "description": "pi-ai provider and pi extension for local Needle 2 inference",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./extension": {
+      "types": "./dist/extension.d.ts",
+      "import": "./dist/extension.js",
+      "default": "./dist/extension.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "bun run clean && tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "test": "bun test tests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "needle.js": "^0.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@types/bun": "latest",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-ai",
+    "needle-2",
+    "tool-calling",
+    "local-ai"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/extension.js"
+    ]
+  }
+}

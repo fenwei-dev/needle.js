@@ -1,6 +1,13 @@
 import type { CqMatrix } from "../model/cact.js";
 import { float16ToNumber } from "../model/fp16.js";
 
+export const DEFAULT_MINIMUM_GPU_ROWS = 1024;
+
+export function normalizeMinimumGpuRows(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return DEFAULT_MINIMUM_GPU_ROWS;
+  return Math.max(0, Math.floor(value));
+}
+
 export const CQ_MATVEC_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read> packed: array<u32>;
 @group(0) @binding(1) var<storage, read> norms: array<f32>;
@@ -32,12 +39,17 @@ fn weight_value(index: u32, bits: u32, group_size: u32) -> f32 {
   return 0.0;
 }
 
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
+var<workgroup> partials: array<f32, 32>;
+
+@compute @workgroup_size(32)
+fn main(
+  @builtin(workgroup_id) workgroup: vec3u,
+  @builtin(local_invocation_id) local: vec3u,
+) {
+  let output_index = workgroup.x;
   let output_count = params[0];
-  if (id.x >= output_count) { return; }
-  let row = params[1] + id.x;
-  let input_padded = params[2];
+  if (output_index >= output_count) { return; }
+  let row = params[1] + output_index;
   let group_size = params[3];
   let bits = params[4];
   let row_bytes = params[5];
@@ -46,14 +58,27 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   for (var group = 0u; group < group_count; group++) {
     var dot = 0.0;
     let offset = group * group_size;
-    for (var column = 0u; column < group_size; column++) {
+    for (var column = local.x; column < group_size; column += 32u) {
       let absolute_column = offset + column;
       let index = packed_index(row, absolute_column, bits, row_bytes);
       dot = dot + weight_value(index, bits, group_size) * input[absolute_column];
     }
-    total = total + norms[row * group_count + group] * dot;
+    partials[local.x] = dot;
+    workgroupBarrier();
+    for (var stride = 16u; stride > 0u; stride >>= 1u) {
+      if (local.x < stride) {
+        partials[local.x] = partials[local.x] + partials[local.x + stride];
+      }
+      workgroupBarrier();
+    }
+    if (local.x == 0u) {
+      total = total + norms[row * group_count + group] * partials[0];
+    }
+    workgroupBarrier();
   }
-  output[id.x] = total;
+  if (local.x == 0u) {
+    output[output_index] = total;
+  }
 }
 `;
 

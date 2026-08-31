@@ -3,8 +3,13 @@ import type { Compute, Gpu, StorageBuffer } from "vgpu";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
 import type { InferenceBackend, MatrixRowRange } from "./backend.js";
-import { dequantizeCqRow, prepareCqActivation } from "./cq.js";
-import { CQ_MATVEC_WGSL, matrixParameters, webGpuMatrixData } from "./webgpu-kernel.js";
+import { cqMatvecPrepared, dequantizeCqRow, prepareCqActivation } from "./cq.js";
+import {
+  CQ_MATVEC_WGSL,
+  matrixParameters,
+  normalizeMinimumGpuRows,
+  webGpuMatrixData,
+} from "./webgpu-kernel.js";
 
 interface VgpuModule {
   readonly init: (options?: unknown) => Promise<Gpu>;
@@ -27,6 +32,11 @@ export interface VGPUBackendOptions {
   readonly init?: unknown;
   /** Force the `vgpu/node` entrypoint (auto-detected under Node by default). */
   readonly node?: boolean;
+  /**
+   * Small matvecs run on CPU because submission/readback costs dominate.
+   * Defaults to 1024 output rows. Set to 0 to force every matvec onto WebGPU.
+   */
+  readonly minimumGpuRows?: number;
 }
 
 /** CQ matvec acceleration implemented with vgpu storage and compute APIs. */
@@ -43,6 +53,7 @@ export class VGPUBackend implements InferenceBackend {
   readonly #parameters: StorageBuffer;
   readonly #codebook: StorageBuffer;
   readonly #matrixCache = new WeakMap<CqMatrix, VgpuMatrix>();
+  readonly #minimumGpuRows: number;
   #disposed = false;
 
   private constructor(
@@ -50,10 +61,12 @@ export class VGPUBackend implements InferenceBackend {
     module: VgpuModule,
     gpu: Gpu,
     ownsGpu: boolean,
+    minimumGpuRows: number,
   ) {
     this.#module = module;
     this.gpu = gpu;
     this.#ownsGpu = ownsGpu;
+    this.#minimumGpuRows = minimumGpuRows;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
@@ -61,7 +74,7 @@ export class VGPUBackend implements InferenceBackend {
     this.#output = module.storage(gpu, align4(maximumOutput * 4), "read-write");
     this.#parameters = module.storage(gpu, 32, "read");
     this.#codebook = module.storage(gpu, align4(weights.codebook.byteLength), "read");
-    this.#codebook.write(ownedBuffer(weights.codebook));
+    this.#codebook.write(bufferSource(weights.codebook));
     this.#compute = module.compute(gpu, CQ_MATVEC_WGSL, { label: "needle.vgpu.cq-matvec" });
   }
 
@@ -86,7 +99,13 @@ export class VGPUBackend implements InferenceBackend {
         gpu = await module.init(options.init);
         ownsGpu = true;
       }
-      return new VGPUBackend(weights, module, gpu, ownsGpu);
+      return new VGPUBackend(
+        weights,
+        module,
+        gpu,
+        ownsGpu,
+        normalizeMinimumGpuRows(options.minimumGpuRows),
+      );
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
       throw new NeedleError("WEBGPU_UNAVAILABLE", "Unable to initialize the vgpu backend", {
@@ -109,9 +128,13 @@ export class VGPUBackend implements InferenceBackend {
       "Invalid vgpu matvec row range",
     );
     const prepared = prepareCqActivation(matrix, input);
+    // Needle's 4–512-row projections cannot amortize a WebGPU submission and
+    // synchronous readback. The 8,192-row vocabulary projection can.
+    if (rowCount < this.#minimumGpuRows)
+      return cqMatvecPrepared(matrix, prepared, rowStart, rowCount);
     const gpuMatrix = this.#gpuMatrix(matrix);
-    this.#input.write(ownedBuffer(prepared));
-    this.#parameters.write(ownedBuffer(matrixParameters(matrix, rowStart, rowCount)));
+    this.#input.write(bufferSource(prepared));
+    this.#parameters.write(bufferSource(matrixParameters(matrix, rowStart, rowCount)));
     this.#compute.set({
       packed: gpuMatrix.packed,
       norms: gpuMatrix.norms,
@@ -120,9 +143,9 @@ export class VGPUBackend implements InferenceBackend {
       params: this.#parameters,
       output: this.#output,
     });
-    this.#compute.dispatch(Math.ceil(rowCount / 64));
+    this.#compute.dispatch(rowCount);
     const bytes = await this.#output.read();
-    return new Float32Array(bytes, 0, rowCount).slice();
+    return new Float32Array(bytes, 0, rowCount);
   }
 
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {
@@ -143,8 +166,8 @@ export class VGPUBackend implements InferenceBackend {
     const data = webGpuMatrixData(matrix);
     const packed = this.#module.storage(this.gpu, align4(data.packedWords.byteLength), "read");
     const norms = this.#module.storage(this.gpu, align4(data.norms.byteLength), "read");
-    packed.write(ownedBuffer(data.packedWords));
-    norms.write(ownedBuffer(data.norms));
+    packed.write(bufferSource(data.packedWords));
+    norms.write(bufferSource(data.norms));
     const result = { packed, norms };
     this.#matrixCache.set(matrix, result);
     return result;
@@ -155,8 +178,9 @@ function align4(value: number): number {
   return Math.max(4, (value + 3) & ~3);
 }
 
-function ownedBuffer(data: ArrayBufferView): ArrayBuffer {
-  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice().buffer;
+function bufferSource(data: ArrayBufferView): BufferSource {
+  if (data.buffer instanceof ArrayBuffer) return data as ArrayBufferView<ArrayBuffer>;
+  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
 }
 
 export async function createVGPUBackend(

@@ -46,7 +46,10 @@ describe("optional GPU backends", () => {
   test("TypeGPU initializes, resolves WGSL, dispatches, and reads back", async () => {
     const mock = await init();
     const { weights, matrix } = fixture();
-    const backend = await TypeGPUBackend.create(weights, { device: mock.gpu });
+    const backend = await TypeGPUBackend.create(weights, {
+      device: mock.gpu,
+      minimumGpuRows: 0,
+    });
     try {
       expect(backend.kind).toBe("typegpu");
       expect(await backend.matvec(matrix, new Float32Array(8))).toHaveLength(1);
@@ -59,7 +62,11 @@ describe("optional GPU backends", () => {
   test("vgpu initializes storage/compute, dispatches, and reads back", async () => {
     const mock = await init();
     const { weights, matrix } = fixture();
-    const backend = await VGPUBackend.create(weights, { gpu: mock, node: true });
+    const backend = await VGPUBackend.create(weights, {
+      gpu: mock,
+      node: true,
+      minimumGpuRows: 0,
+    });
     try {
       expect(backend.kind).toBe("vgpu");
       expect(await backend.matvec(matrix, new Float32Array(8))).toHaveLength(1);

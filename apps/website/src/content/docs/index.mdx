@@ -69,7 +69,7 @@ Needle 2 is purpose-built for selecting tools and extracting their arguments. Th
 3. Let a continuous byte grammar make malformed calls unreachable.
 4. Execute above your chosen confidence threshold.
 
-On Apple WebKit with WebGPU, greedy generation currently measures about **44 tok/s** on the pure TypeScript backend versus about **2 tok/s** on TypeGPU and vgpu, because GPU matvecs still round-trip to JS between operators. [See the numbers](/needle.js/reference/benchmarks/).
+On Apple WebKit with WebGPU, greedy generation measures about **44 tok/s** in pure TypeScript and **51 tok/s** with the adaptive TypeGPU and vgpu backends. Small projections stay on CPU because a WebGPU round trip costs more than their compute. [See the numbers](/needle.js/reference/benchmarks/).
 
 :::note[Designed for actions]
 Needle is not a tiny general-purpose chat model. Its best output is a validated tool call. The high-level APIs preserve that design instead of pretending otherwise.

@@ -12,7 +12,7 @@ The package provides three interchangeable implementations:
 | `needle.js/typegpu` | TypeGPU + WebGPU | `typegpu` and a WebGPU device |
 | `needle.js/vgpu` | vgpu + WebGPU | `vgpu` and a WebGPU device |
 
-All three use the same tokenizer, incremental decoder, conversation API, and continuous byte-level JSON Schema grammar. The GPU implementations execute packed Cactus-Quant matrix-vector products on WebGPU while TypeScript orchestrates the small recurrent, attention, and grammar operations.
+All three use the same tokenizer, incremental decoder, conversation API, and continuous byte-level JSON Schema grammar. The GPU implementations offload sufficiently large packed Cactus-Quant matrix-vector products to WebGPU while TypeScript handles small projections, recurrent operations, attention, and grammar.
 
 ## Implemented
 
@@ -143,6 +143,8 @@ const agent = await createNeedleTypeGPU({
     // root,
     // device,
     init: { device: { optionalFeatures: ["shader-f16"] } },
+    // Matvecs below this row count stay on CPU (default: 1024).
+    // minimumGpuRows: 0, // force every matvec onto WebGPU
   },
 });
 ```
@@ -159,6 +161,7 @@ const agent = await createNeedleVGPU({
   tools: [getWeather],
   backendOptions: {
     // Optional: gpu, device, init, or node: true
+    // minimumGpuRows: 0, // force every matvec onto WebGPU
   },
 });
 ```
@@ -179,15 +182,16 @@ Greedy generation of 32 tokens in Bun.WebView (WKWebView + WebGPU, macOS arm64, 
 
 | Backend | Median tok/s | Median ms / 32 tokens |
 | --- | ---: | ---: |
-| Pure TypeScript | **44.0** | 727 |
-| TypeGPU | 1.98 | 16,160 |
-| vgpu | 2.00 | 15,995 |
+| Pure TypeScript | 44.2 | 725 |
+| TypeGPU | **50.8** | 630 |
+| vgpu | 50.5 | 634 |
 
-GPU matvecs currently read back after every operator, so the hybrid WebGPU path is not a throughput win yet. Reproduce with:
+The WebGPU shader reduces each CQ row across a 32-lane workgroup. By default, projections below 1,024 output rows stay on CPU because their submission/readback cost exceeds their compute time; for the official model, WebGPU therefore handles the 8,192-row vocabulary projection. Forcing every matvec onto WebGPU measured 6.68 tok/s with TypeGPU and 11.33 tok/s with vgpu because it restores roughly 220 readbacks per model step. Reproduce with:
 
 ```bash
 bun run bench
 bun run bench -- --tokens 32 --warmup 1 --runs 2 --json
+bun run bench -- --minimum-gpu-rows 0 # diagnostic all-WebGPU matvec path
 ```
 
 Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/).

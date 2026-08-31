@@ -34,6 +34,7 @@ const agent = await createNeedleTypeGPU({
   backendOptions: {
     // root: existingTgpuRoot,
     // device: existingGPUDevice,
+    // minimumGpuRows: 0, // force all matvecs onto WebGPU
   },
 });
 ```
@@ -44,7 +45,7 @@ Install the optional peer:
 bun add typegpu
 ```
 
-TypeGPU initializes or adopts the WebGPU device and resolves the CQ matvec WGSL. Packed matrices are uploaded lazily and cached on first use.
+TypeGPU initializes or adopts the WebGPU device and resolves the CQ matvec WGSL. Packed matrices are uploaded lazily and cached on first use. Its row-parallel kernel uses one 32-lane workgroup per output row.
 
 ## vgpu
 
@@ -58,6 +59,7 @@ const agent = await createNeedleVGPU({
     // gpu: existingVgpuContext,
     // device: existingGPUDevice,
     // node: true,
+    // minimumGpuRows: 0, // force all matvecs onto WebGPU
   },
 });
 ```
@@ -83,9 +85,11 @@ In a browser with WebGPU, `auto` tries TypeGPU and then vgpu. Otherwise it uses 
 
 ## Hybrid GPU execution
 
-The GPU backends accelerate packed CQ matrix–vector operators. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent operators. This favors a compact, auditable implementation over maximum throughput.
+The GPU backends accelerate packed CQ matrix–vector operators. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent GPU operators.
 
-A future fully fused engine could keep hidden state and KV cache resident on GPU and dispatch layer pipelines without intermediate CPU readback. Measured greedy generation on Apple WebKit WebGPU is therefore slower than the pure TypeScript kernel today; see [backend benchmarks](/needle.js/reference/benchmarks/).
+A matvec with only 4–512 output rows is too small to amortize submission and synchronous readback in this architecture. Both backends therefore default `minimumGpuRows` to `1024`; smaller projections use the optimized TypeScript CQ kernel and the official model's 8,192-row vocabulary projection uses WebGPU. Set `minimumGpuRows: 0` to force every CQ matvec onto the GPU for diagnostics.
+
+This adaptive split slightly beats pure TypeScript on the measured Apple WebKit workload. A future fully resident engine could keep hidden state and KV cache on GPU and make the smaller projections worthwhile without intermediate readback. See [backend benchmarks](/needle.js/reference/benchmarks/).
 
 ## Custom backend
 

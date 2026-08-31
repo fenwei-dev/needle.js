@@ -24,6 +24,7 @@ interface CliOptions {
   runs: number;
   prompt: string;
   json: boolean;
+  minimumGpuRows: number | undefined;
 }
 
 const DEFAULT_PROMPT = "The most surprising thing about local inference is";
@@ -38,6 +39,7 @@ function parseArgs(argv: string[]): CliOptions {
     runs: 2,
     prompt: DEFAULT_PROMPT,
     json: false,
+    minimumGpuRows: undefined,
   };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
@@ -58,6 +60,9 @@ function parseArgs(argv: string[]): CliOptions {
     } else if (argument === "--prompt" && next) {
       options.prompt = next;
       index++;
+    } else if (argument === "--minimum-gpu-rows" && next) {
+      options.minimumGpuRows = Number(next);
+      index++;
     } else if (argument === "--help" || argument === "-h") {
       printHelp();
       process.exit(0);
@@ -77,6 +82,7 @@ Options:
   --warmup <n>                  Warmup generations (default 1)
   --runs <n>                    Timed generations (default 2)
   --prompt <text>               Generation prompt
+  --minimum-gpu-rows <n>        CPU fallback cutoff (default 1024; 0 = all GPU)
   --json                        Print machine-readable JSON
 `);
 }
@@ -214,6 +220,7 @@ try {
     runs: cli.runs,
     prompt: cli.prompt,
     modelUrl: `${origin}/model.cact`,
+    ...(cli.minimumGpuRows === undefined ? {} : { minimumGpuRows: cli.minimumGpuRows }),
   };
 
   process.stderr.write("running in WebView...\n");
@@ -238,6 +245,7 @@ const report = {
     warmup: cli.warmup,
     runs: cli.runs,
     prompt: cli.prompt,
+    minimumGpuRows: cli.minimumGpuRows ?? 1024,
   },
   results: page.results,
 };

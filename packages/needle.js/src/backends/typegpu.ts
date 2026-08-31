@@ -3,8 +3,13 @@ import { type TgpuRoot, tgpu } from "typegpu";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
 import type { InferenceBackend, MatrixRowRange } from "./backend.js";
-import { dequantizeCqRow, prepareCqActivation } from "./cq.js";
-import { CQ_MATVEC_WGSL, matrixParameters, webGpuMatrixData } from "./webgpu-kernel.js";
+import { cqMatvecPrepared, dequantizeCqRow, prepareCqActivation } from "./cq.js";
+import {
+  CQ_MATVEC_WGSL,
+  matrixParameters,
+  normalizeMinimumGpuRows,
+  webGpuMatrixData,
+} from "./webgpu-kernel.js";
 
 const MAP_READ = 0x0001;
 const COPY_SRC = 0x0004;
@@ -14,6 +19,7 @@ const STORAGE = 0x0080;
 interface GpuMatrix {
   readonly packed: GPUBuffer;
   readonly norms: GPUBuffer;
+  readonly bindGroup: GPUBindGroup;
 }
 
 export interface TypeGPUBackendOptions {
@@ -23,6 +29,11 @@ export interface TypeGPUBackendOptions {
   readonly device?: GPUDevice;
   /** Forwarded to `tgpu.init` when neither root nor device is supplied. */
   readonly init?: Parameters<typeof tgpu.init>[0];
+  /**
+   * Small matvecs run on CPU because submission/readback costs dominate.
+   * Defaults to 1024 output rows. Set to 0 to force every matvec onto WebGPU.
+   */
+  readonly minimumGpuRows?: number;
 }
 
 /** CQ matvec acceleration using a device initialized and owned through TypeGPU. */
@@ -41,6 +52,7 @@ export class TypeGPUBackend implements InferenceBackend {
   readonly #staging: GPUBuffer;
   readonly #matrixCache = new WeakMap<CqMatrix, GpuMatrix>();
   readonly #allocatedMatrices: GpuMatrix[] = [];
+  readonly #minimumGpuRows: number;
   #disposed = false;
 
   private constructor(
@@ -48,11 +60,13 @@ export class TypeGPUBackend implements InferenceBackend {
     root: TgpuRoot,
     ownsRoot: boolean,
     pipeline: GPUComputePipeline,
+    minimumGpuRows: number,
   ) {
     this.root = root;
     this.device = root.device;
     this.#ownsRoot = ownsRoot;
     this.#pipeline = pipeline;
+    this.#minimumGpuRows = minimumGpuRows;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
@@ -113,7 +127,13 @@ export class TypeGPUBackend implements InferenceBackend {
       const pipeline = root.device.createComputePipelineAsync
         ? await root.device.createComputePipelineAsync(descriptor)
         : root.device.createComputePipeline(descriptor);
-      return new TypeGPUBackend(weights, root, ownsRoot, pipeline);
+      return new TypeGPUBackend(
+        weights,
+        root,
+        ownsRoot,
+        pipeline,
+        normalizeMinimumGpuRows(options.minimumGpuRows),
+      );
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
       throw new NeedleError("WEBGPU_UNAVAILABLE", "Unable to initialize the TypeGPU backend", {
@@ -136,35 +156,29 @@ export class TypeGPUBackend implements InferenceBackend {
       "Invalid TypeGPU matvec row range",
     );
     const prepared = prepareCqActivation(matrix, input);
+    // Needle's 4–512-row projections cannot amortize a WebGPU submission and
+    // synchronous readback. The 8,192-row vocabulary projection can.
+    if (rowCount < this.#minimumGpuRows)
+      return cqMatvecPrepared(matrix, prepared, rowStart, rowCount);
     const gpuMatrix = this.#gpuMatrix(matrix);
     const parameters = matrixParameters(matrix, rowStart, rowCount);
-    this.device.queue.writeBuffer(this.#input, 0, ownedBuffer(prepared));
-    this.device.queue.writeBuffer(this.#parameters, 0, ownedBuffer(parameters));
+    this.device.queue.writeBuffer(this.#input, 0, bufferSource(prepared));
+    this.device.queue.writeBuffer(this.#parameters, 0, bufferSource(parameters));
 
-    const bindGroup = this.device.createBindGroup({
-      label: "needle.typegpu.cq-matvec.bind-group",
-      layout: this.#pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: gpuMatrix.packed } },
-        { binding: 1, resource: { buffer: gpuMatrix.norms } },
-        { binding: 2, resource: { buffer: this.#input } },
-        { binding: 3, resource: { buffer: this.#codebook } },
-        { binding: 4, resource: { buffer: this.#parameters } },
-        { binding: 5, resource: { buffer: this.#output } },
-      ],
-    });
     const encoder = this.device.createCommandEncoder({ label: "needle.typegpu.cq-matvec.encoder" });
     const pass = encoder.beginComputePass({ label: "needle.typegpu.cq-matvec.pass" });
     pass.setPipeline(this.#pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(rowCount / 64));
+    pass.setBindGroup(0, gpuMatrix.bindGroup);
+    pass.dispatchWorkgroups(rowCount);
     pass.end();
     encoder.copyBufferToBuffer(this.#output, 0, this.#staging, 0, align4(rowCount * 4));
     this.device.queue.submit([encoder.finish()]);
     await this.#staging.mapAsync(MAP_READ, 0, align4(rowCount * 4));
-    const copy = this.#staging.getMappedRange(0, align4(rowCount * 4)).slice(0);
+    const mapped = this.#staging.getMappedRange(0, align4(rowCount * 4));
+    const result = new Float32Array(rowCount);
+    result.set(new Float32Array(mapped, 0, rowCount));
     this.#staging.unmap();
-    return new Float32Array(copy, 0, rowCount).slice();
+    return result;
   }
 
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {
@@ -190,20 +204,31 @@ export class TypeGPUBackend implements InferenceBackend {
     const cached = this.#matrixCache.get(matrix);
     if (cached) return cached;
     const data = webGpuMatrixData(matrix);
-    const result = {
-      packed: bufferWithData(
-        this.device,
-        `needle.typegpu.matrix.${matrix.record.index}.packed`,
-        data.packedWords,
-        STORAGE | COPY_DST,
-      ),
-      norms: bufferWithData(
-        this.device,
-        `needle.typegpu.matrix.${matrix.record.index}.norms`,
-        data.norms,
-        STORAGE | COPY_DST,
-      ),
-    };
+    const packed = bufferWithData(
+      this.device,
+      `needle.typegpu.matrix.${matrix.record.index}.packed`,
+      data.packedWords,
+      STORAGE | COPY_DST,
+    );
+    const norms = bufferWithData(
+      this.device,
+      `needle.typegpu.matrix.${matrix.record.index}.norms`,
+      data.norms,
+      STORAGE | COPY_DST,
+    );
+    const bindGroup = this.device.createBindGroup({
+      label: `needle.typegpu.matrix.${matrix.record.index}.bind-group`,
+      layout: this.#pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: packed } },
+        { binding: 1, resource: { buffer: norms } },
+        { binding: 2, resource: { buffer: this.#input } },
+        { binding: 3, resource: { buffer: this.#codebook } },
+        { binding: 4, resource: { buffer: this.#parameters } },
+        { binding: 5, resource: { buffer: this.#output } },
+      ],
+    });
+    const result = { packed, norms, bindGroup };
     this.#matrixCache.set(matrix, result);
     this.#allocatedMatrices.push(result);
     return result;
@@ -221,12 +246,13 @@ function bufferWithData(
   usage: GPUBufferUsageFlags,
 ): GPUBuffer {
   const buffer = device.createBuffer({ label, size: align4(data.byteLength), usage });
-  device.queue.writeBuffer(buffer, 0, ownedBuffer(data));
+  device.queue.writeBuffer(buffer, 0, bufferSource(data));
   return buffer;
 }
 
-function ownedBuffer(data: ArrayBufferView): ArrayBuffer {
-  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice().buffer;
+function bufferSource(data: ArrayBufferView): GPUAllowSharedBufferSource {
+  if (data.buffer instanceof ArrayBuffer) return data as ArrayBufferView<ArrayBuffer>;
+  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
 }
 
 export async function createTypeGPUBackend(

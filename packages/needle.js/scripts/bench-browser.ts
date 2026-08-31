@@ -10,6 +10,7 @@ export interface BrowserBenchOptions {
   runs: number;
   prompt: string;
   modelUrl: string;
+  minimumGpuRows?: number;
 }
 
 export interface RunSample {
@@ -40,6 +41,10 @@ async function measureBackend(
     model = await NeedleModel.load({
       weights: { kind: "url", url: options.modelUrl, cache: false },
       backend: backend as BackendSelection,
+      backendOptions:
+        backend === "cpu" || options.minimumGpuRows === undefined
+          ? undefined
+          : { minimumGpuRows: options.minimumGpuRows },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -81,8 +86,7 @@ async function measureBackend(
       loadMs,
       warmupMs,
       runs,
-      generatedText: last?.text,
-      finishReason: last?.finishReason,
+      ...(last ? { generatedText: last.text, finishReason: last.finishReason } : {}),
     };
   } catch (error) {
     return {

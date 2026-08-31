@@ -22,6 +22,7 @@ bun install
 bun run typecheck
 bun test
 bun run build
+bun run --cwd packages/needle.js bench
 ```
 
 Commands run across all workspaces that expose the corresponding script.

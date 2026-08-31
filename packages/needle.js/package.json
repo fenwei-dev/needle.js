@@ -49,6 +49,7 @@
     "test": "bun test",
     "test:model": "bun test tests/model.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bench": "bun run scripts/bench.ts",
     "embed:model": "bun run scripts/embed-model.ts"
   },
   "dependencies": {

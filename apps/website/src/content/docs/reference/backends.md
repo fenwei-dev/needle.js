@@ -85,7 +85,7 @@ In a browser with WebGPU, `auto` tries TypeGPU and then vgpu. Otherwise it uses 
 
 The GPU backends accelerate packed CQ matrix–vector operators. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent operators. This favors a compact, auditable implementation over maximum throughput.
 
-A future fully fused engine could keep hidden state and KV cache resident on GPU and dispatch layer pipelines without intermediate CPU readback.
+A future fully fused engine could keep hidden state and KV cache resident on GPU and dispatch layer pipelines without intermediate CPU readback. Measured greedy generation on Apple WebKit WebGPU is therefore slower than the pure TypeScript kernel today; see [backend benchmarks](/needle.js/reference/benchmarks/).
 
 ## Custom backend
 

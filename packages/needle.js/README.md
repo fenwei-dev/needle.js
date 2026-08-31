@@ -173,6 +173,25 @@ const model = await NeedleModel.load({ backend: "auto", weights: "download" });
 
 `auto` tries TypeGPU and then vgpu when browser WebGPU is visible, and otherwise falls back to the pure TypeScript backend. Explicit GPU selection throws a useful error rather than silently changing backend.
 
+## Benchmarks
+
+Greedy generation of 32 tokens in Bun.WebView (WKWebView + WebGPU, macOS arm64, Bun 1.4.0), same `.cact` weights and prompt for every backend:
+
+| Backend | Median tok/s | Median ms / 32 tokens |
+| --- | ---: | ---: |
+| Pure TypeScript | **44.0** | 727 |
+| TypeGPU | 1.98 | 16,160 |
+| vgpu | 2.00 | 15,995 |
+
+GPU matvecs currently read back after every operator, so the hybrid WebGPU path is not a throughput win yet. Reproduce with:
+
+```bash
+bun run bench
+bun run bench -- --tokens 32 --warmup 1 --runs 2 --json
+```
+
+Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/).
+
 ## Weight sources
 
 ### Download and cache
@@ -326,6 +345,7 @@ bun install
 bun run typecheck
 bun test
 bun run build
+bun run bench
 ```
 
 Run the parity integration test against an official archive:

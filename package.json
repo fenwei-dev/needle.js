@@ -1,11 +1,86 @@
 {
   "name": "needle.js",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "description": "Needle 2 inference and schema-constrained tool calling for TypeScript",
   "type": "module",
-  "devDependencies": {
-    "@types/bun": "latest"
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./cpu": {
+      "types": "./dist/cpu.d.ts",
+      "import": "./dist/cpu.js",
+      "default": "./dist/cpu.js"
+    },
+    "./typegpu": {
+      "types": "./dist/typegpu.d.ts",
+      "import": "./dist/typegpu.js",
+      "default": "./dist/typegpu.js"
+    },
+    "./vgpu": {
+      "types": "./dist/vgpu.d.ts",
+      "import": "./dist/vgpu.js",
+      "default": "./dist/vgpu.js"
+    },
+    "./embedded": {
+      "types": "./dist/embedded.d.ts",
+      "import": "./dist/embedded.js",
+      "default": "./dist/embedded.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "bun run clean && tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "test": "bun test",
+    "test:model": "bun test tests/model.integration.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "embed:model": "bun run scripts/embed-model.ts"
+  },
+  "dependencies": {
+    "@webgpu/types": "^0.1.69"
   },
   "peerDependencies": {
-    "typescript": "^7"
-  }
+    "typegpu": "^0.12.4",
+    "vgpu": "^0.3.1"
+  },
+  "peerDependenciesMeta": {
+    "typegpu": {
+      "optional": true
+    },
+    "vgpu": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typegpu": "^0.12.4",
+    "typescript": "^5.9.2",
+    "vgpu": "^0.3.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "needle-2",
+    "llm",
+    "tool-calling",
+    "webgpu",
+    "typegpu",
+    "vgpu",
+    "typescript"
+  ]
 }

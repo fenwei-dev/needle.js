@@ -1,7 +1,8 @@
 export * from "./index.js";
-import { Needle, type NeedleOptions } from "./tools/agent.js";
-import { NeedleModel, type LoadModelOptions } from "./model/model.js";
+
 import type { VGPUBackendOptions } from "./backends/vgpu.js";
+import { type LoadModelOptions, NeedleModel } from "./model/model.js";
+import { Needle, type NeedleOptions } from "./tools/agent.js";
 
 export async function loadNeedleVGPU(
   options: LoadModelOptions & { readonly backendOptions?: VGPUBackendOptions } = {},
@@ -16,7 +17,7 @@ export async function createNeedleVGPU(
 }
 
 export {
-  VGPUBackend,
   createVGPUBackend,
+  VGPUBackend,
   type VGPUBackendOptions,
 } from "./backends/vgpu.js";

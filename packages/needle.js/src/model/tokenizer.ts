@@ -18,7 +18,7 @@ export const CHAT_MARKERS = {
   toolResultEnd: "</tool_result>",
 } as const;
 
-export const enum TokenPieceType {
+export enum TokenPieceType {
   Normal = 0,
   Unknown = 1,
   Control = 2,
@@ -43,7 +43,11 @@ export interface TokenizerMetadata {
 }
 
 function readMetadata(blob: Uint8Array): TokenizerMetadata {
-  invariant(blob.byteLength >= 24, "INVALID_CACT", "Tokenizer blob is shorter than its 24-byte header");
+  invariant(
+    blob.byteLength >= 24,
+    "INVALID_CACT",
+    "Tokenizer blob is shorter than its 24-byte header",
+  );
   const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
   const count = view.getUint32(0, true);
   const padTokenId = view.getUint32(4, true);
@@ -62,11 +66,19 @@ function readMetadata(blob: Uint8Array): TokenizerMetadata {
     types[id] = view.getUint8(offset + 4);
     const byteLength = view.getUint16(offset + 5, true);
     offset += 7;
-    invariant(offset + byteLength <= blob.byteLength, "INVALID_CACT", `Tokenizer piece ${id} is truncated`);
+    invariant(
+      offset + byteLength <= blob.byteLength,
+      "INVALID_CACT",
+      `Tokenizer piece ${id} is truncated`,
+    );
     pieces.push(decoder.decode(blob.subarray(offset, offset + byteLength)));
     offset += byteLength;
   }
-  invariant(offset === blob.byteLength, "INVALID_CACT", `Tokenizer blob has ${blob.byteLength - offset} unexplained trailing bytes`);
+  invariant(
+    offset === blob.byteLength,
+    "INVALID_CACT",
+    `Tokenizer blob has ${blob.byteLength - offset} unexplained trailing bytes`,
+  );
   return {
     pieces,
     scores,
@@ -99,7 +111,8 @@ export class NeedleTokenizer {
   readonly #pieceBytes: (Uint8Array | undefined)[];
 
   constructor(blobOrMetadata: Uint8Array | TokenizerMetadata) {
-    const metadata = blobOrMetadata instanceof Uint8Array ? readMetadata(blobOrMetadata) : blobOrMetadata;
+    const metadata =
+      blobOrMetadata instanceof Uint8Array ? readMetadata(blobOrMetadata) : blobOrMetadata;
     this.pieces = metadata.pieces;
     this.scores = metadata.scores;
     this.types = metadata.types;
@@ -110,7 +123,11 @@ export class NeedleTokenizer {
     this.addDummyPrefix = metadata.addDummyPrefix;
     this.byteFallback = metadata.byteFallback;
     this.vocabularySize = this.pieces.length;
-    invariant(this.scores.length === this.vocabularySize && this.types.length === this.vocabularySize, "INVALID_CACT", "Tokenizer piece, score, and type counts differ");
+    invariant(
+      this.scores.length === this.vocabularySize && this.types.length === this.vocabularySize,
+      "INVALID_CACT",
+      "Tokenizer piece, score, and type counts differ",
+    );
 
     this.#pieceToId = new Map(this.pieces.map((piece, id) => [piece, id]));
     this.#byteToId = new Int32Array(256);
@@ -238,7 +255,11 @@ export class NeedleTokenizer {
    * pieces may intentionally be invalid UTF-8 until adjacent pieces join them.
    */
   pieceBytes(id: number): Uint8Array {
-    invariant(Number.isInteger(id) && id >= 0 && id < this.vocabularySize, "INVALID_CACT", `Token ID ${id} is outside the vocabulary`);
+    invariant(
+      Number.isInteger(id) && id >= 0 && id < this.vocabularySize,
+      "INVALID_CACT",
+      `Token ID ${id} is outside the vocabulary`,
+    );
     const cached = this.#pieceBytes[id];
     if (cached !== undefined) return cached;
     const type = this.types[id];

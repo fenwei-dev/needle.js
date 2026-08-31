@@ -1,4 +1,4 @@
-import { NeedleError, invariant } from "../errors.js";
+import { invariant, NeedleError } from "../errors.js";
 import type { JsonSchema, JsonValue, NeedleTool } from "./schema.js";
 
 const textEncoder = new TextEncoder();
@@ -69,7 +69,15 @@ interface KeyFrame {
   candidates: KeyCandidate[];
 }
 
-type Frame = ValueFrame | StringFrame | NumberFrame | LiteralFrame | ChoiceFrame | ArrayFrame | ObjectFrame | KeyFrame;
+type Frame =
+  | ValueFrame
+  | StringFrame
+  | NumberFrame
+  | LiteralFrame
+  | ChoiceFrame
+  | ArrayFrame
+  | ObjectFrame
+  | KeyFrame;
 
 function cloneFrame(frame: Frame): Frame {
   switch (frame.kind) {
@@ -99,7 +107,9 @@ function cloneFrame(frame: Frame): Frame {
 function structuredValueClone(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(structuredValueClone);
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, structuredValueClone(child)]));
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, structuredValueClone(child)]),
+    );
   }
   return value;
 }
@@ -110,14 +120,26 @@ function deepEqual(left: JsonValue, right: JsonValue): boolean {
 
 function resolveReference(schema: JsonSchema, root: JsonSchema): JsonSchema {
   if (!schema.$ref) return schema;
-  invariant(schema.$ref.startsWith("#/"), "INVALID_TOOL_SCHEMA", `Only local JSON Schema refs are supported; got ${schema.$ref}`);
+  invariant(
+    schema.$ref.startsWith("#/"),
+    "INVALID_TOOL_SCHEMA",
+    `Only local JSON Schema refs are supported; got ${schema.$ref}`,
+  );
   let current: unknown = root;
   for (const rawPart of schema.$ref.slice(2).split("/")) {
     const part = rawPart.replaceAll("~1", "/").replaceAll("~0", "~");
-    invariant(current !== null && typeof current === "object" && part in current, "INVALID_TOOL_SCHEMA", `Unresolved JSON Schema ref ${schema.$ref}`);
+    invariant(
+      current !== null && typeof current === "object" && part in current,
+      "INVALID_TOOL_SCHEMA",
+      `Unresolved JSON Schema ref ${schema.$ref}`,
+    );
     current = (current as Record<string, unknown>)[part];
   }
-  invariant(current !== null && typeof current === "object", "INVALID_TOOL_SCHEMA", `JSON Schema ref ${schema.$ref} does not point to a schema`);
+  invariant(
+    current !== null && typeof current === "object",
+    "INVALID_TOOL_SCHEMA",
+    `JSON Schema ref ${schema.$ref} does not point to a schema`,
+  );
   const { $ref: _ignored, ...local } = schema;
   return { ...(current as JsonSchema), ...local };
 }
@@ -151,7 +173,8 @@ function typeStartsWith(type: string, byte: number): boolean {
   if (type === "array") return byte === 0x5b;
   if (type === "boolean") return byte === 0x74 || byte === 0x66;
   if (type === "null") return byte === 0x6e;
-  if (type === "number" || type === "integer") return byte === 0x2d || (byte >= 0x30 && byte <= 0x39);
+  if (type === "number" || type === "integer")
+    return byte === 0x2d || (byte >= 0x30 && byte <= 0x39);
   return false;
 }
 
@@ -163,25 +186,35 @@ function validateString(value: string, schema: JsonSchema): boolean {
     try {
       if (!new RegExp(schema.pattern).test(value)) return false;
     } catch (cause) {
-      throw new NeedleError("INVALID_TOOL_SCHEMA", `Invalid JSON Schema pattern ${schema.pattern}`, { cause });
+      throw new NeedleError(
+        "INVALID_TOOL_SCHEMA",
+        `Invalid JSON Schema pattern ${schema.pattern}`,
+        { cause },
+      );
     }
   }
   if (schema.format === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return false;
-  if (schema.format === "uuid" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) return false;
+  if (
+    schema.format === "uuid" &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  )
+    return false;
   return validateEnum(value, schema);
 }
 
 function validateNumber(value: number, schema: JsonSchema): boolean {
   if (!Number.isFinite(value)) return false;
   const types = possibleTypes(schema);
-  if (types.includes("integer") && !types.includes("number") && !Number.isInteger(value)) return false;
+  if (types.includes("integer") && !types.includes("number") && !Number.isInteger(value))
+    return false;
   if (schema.minimum !== undefined && value < schema.minimum) return false;
   if (schema.maximum !== undefined && value > schema.maximum) return false;
   if (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum) return false;
   if (schema.exclusiveMaximum !== undefined && value >= schema.exclusiveMaximum) return false;
   if (schema.multipleOf !== undefined) {
     const quotient = value / schema.multipleOf;
-    if (Math.abs(quotient - Math.round(quotient)) > 1e-9 * Math.max(1, Math.abs(quotient))) return false;
+    if (Math.abs(quotient - Math.round(quotient)) > 1e-9 * Math.max(1, Math.abs(quotient)))
+      return false;
   }
   return validateEnum(value, schema);
 }
@@ -237,7 +270,11 @@ export class JsonSchemaGrammar {
     if (this.#complete) return true;
     if (this.#stack.length === 1) {
       const frame = this.#stack[0];
-      if (frame?.kind === "choice" && frame.candidates.some((candidate) => candidate.offset === candidate.bytes.length)) return true;
+      if (
+        frame?.kind === "choice" &&
+        frame.candidates.some((candidate) => candidate.offset === candidate.bytes.length)
+      )
+        return true;
     }
     return false;
   }
@@ -246,7 +283,8 @@ export class JsonSchemaGrammar {
     if (this.#complete) return this.#value;
     const frame = this.#stack.length === 1 ? this.#stack[0] : undefined;
     if (frame?.kind === "choice") {
-      return frame.candidates.find((candidate) => candidate.offset === candidate.bytes.length)?.value;
+      return frame.candidates.find((candidate) => candidate.offset === candidate.bytes.length)
+        ?.value;
     }
     return undefined;
   }
@@ -272,32 +310,80 @@ export class JsonSchemaGrammar {
       switch (frame.kind) {
         case "value": {
           const alternatives = schemaAlternatives(frame.schema, this.rootSchema);
-          const resolvedAlternatives = alternatives.map((alternative) => resolveReference(alternative, this.rootSchema));
+          const resolvedAlternatives = alternatives.map((alternative) =>
+            resolveReference(alternative, this.rootSchema),
+          );
           const enumValues = resolvedAlternatives.flatMap((alternative) => {
             if (alternative.const !== undefined) return [alternative.const];
             return alternative.enum ? [...alternative.enum] : [];
           });
-          if (enumValues.length > 0 && resolvedAlternatives.every((alternative) => alternative.const !== undefined || alternative.enum !== undefined)) {
+          if (
+            enumValues.length > 0 &&
+            resolvedAlternatives.every(
+              (alternative) => alternative.const !== undefined || alternative.enum !== undefined,
+            )
+          ) {
             this.#stack[this.#stack.length - 1] = {
               kind: "choice",
-              candidates: enumValues.map((value) => ({ bytes: textEncoder.encode(JSON.stringify(value)), value, offset: 0 })),
+              candidates: enumValues.map((value) => ({
+                bytes: textEncoder.encode(JSON.stringify(value)),
+                value,
+                offset: 0,
+              })),
             };
             continue;
           }
-          const matching = alternatives.filter((alternative) => possibleTypes(resolveReference(alternative, this.rootSchema)).some((type) => typeStartsWith(type, byte)));
+          const matching = alternatives.filter((alternative) =>
+            possibleTypes(resolveReference(alternative, this.rootSchema)).some((type) =>
+              typeStartsWith(type, byte),
+            ),
+          );
           if (matching.length === 0) return false;
           const schema = resolveReference(matching[0] ?? frame.schema, this.rootSchema);
           const types = possibleTypes(schema);
-          let selected = types.find((type) => typeStartsWith(type, byte));
+          const selected = types.find((type) => typeStartsWith(type, byte));
           if (!selected) return false;
-          if (selected === "string") this.#stack[this.#stack.length - 1] = { kind: "string", schema, bytes: [], started: false, escaped: false, unicodeRemaining: 0 };
-          else if (selected === "number" || selected === "integer") this.#stack[this.#stack.length - 1] = { kind: "number", schema, text: "" };
+          if (selected === "string")
+            this.#stack[this.#stack.length - 1] = {
+              kind: "string",
+              schema,
+              bytes: [],
+              started: false,
+              escaped: false,
+              unicodeRemaining: 0,
+            };
+          else if (selected === "number" || selected === "integer")
+            this.#stack[this.#stack.length - 1] = { kind: "number", schema, text: "" };
           else if (selected === "boolean") {
             const value = byte === 0x74;
-            this.#stack[this.#stack.length - 1] = { kind: "literal", bytes: textEncoder.encode(value ? "true" : "false"), value, offset: 0 };
-          } else if (selected === "null") this.#stack[this.#stack.length - 1] = { kind: "literal", bytes: textEncoder.encode("null"), value: null, offset: 0 };
-          else if (selected === "array") this.#stack[this.#stack.length - 1] = { kind: "array", schema, phase: "open", values: [] };
-          else if (selected === "object") this.#stack[this.#stack.length - 1] = { kind: "object", schema, phase: "open", value: {}, used: [] };
+            this.#stack[this.#stack.length - 1] = {
+              kind: "literal",
+              bytes: textEncoder.encode(value ? "true" : "false"),
+              value,
+              offset: 0,
+            };
+          } else if (selected === "null")
+            this.#stack[this.#stack.length - 1] = {
+              kind: "literal",
+              bytes: textEncoder.encode("null"),
+              value: null,
+              offset: 0,
+            };
+          else if (selected === "array")
+            this.#stack[this.#stack.length - 1] = {
+              kind: "array",
+              schema,
+              phase: "open",
+              values: [],
+            };
+          else if (selected === "object")
+            this.#stack[this.#stack.length - 1] = {
+              kind: "object",
+              schema,
+              phase: "open",
+              value: {},
+              used: [],
+            };
           else return false;
           continue;
         }
@@ -309,13 +395,21 @@ export class JsonSchemaGrammar {
             return true;
           }
           if (frame.unicodeRemaining > 0) {
-            if (!((byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x46) || (byte >= 0x61 && byte <= 0x66))) return false;
+            if (
+              !(
+                (byte >= 0x30 && byte <= 0x39) ||
+                (byte >= 0x41 && byte <= 0x46) ||
+                (byte >= 0x61 && byte <= 0x66)
+              )
+            )
+              return false;
             frame.unicodeRemaining--;
             frame.bytes.push(byte);
             return true;
           }
           if (frame.escaped) {
-            if (![0x22, 0x5c, 0x2f, 0x62, 0x66, 0x6e, 0x72, 0x74, 0x75].includes(byte)) return false;
+            if (![0x22, 0x5c, 0x2f, 0x62, 0x66, 0x6e, 0x72, 0x74, 0x75].includes(byte))
+              return false;
             frame.escaped = false;
             if (byte === 0x75) frame.unicodeRemaining = 4;
             frame.bytes.push(byte);
@@ -360,13 +454,19 @@ export class JsonSchemaGrammar {
           return true;
         }
         case "choice": {
-          const continuing = frame.candidates.filter((candidate) => candidate.offset < candidate.bytes.length && candidate.bytes[candidate.offset] === byte);
+          const continuing = frame.candidates.filter(
+            (candidate) =>
+              candidate.offset < candidate.bytes.length &&
+              candidate.bytes[candidate.offset] === byte,
+          );
           if (continuing.length > 0) {
             for (const candidate of continuing) candidate.offset++;
             frame.candidates = continuing;
             return true;
           }
-          const completed = frame.candidates.find((candidate) => candidate.offset === candidate.bytes.length);
+          const completed = frame.candidates.find(
+            (candidate) => candidate.offset === candidate.bytes.length,
+          );
           if (!completed) return false;
           this.#finish(completed.value);
           continue;
@@ -422,7 +522,11 @@ export class JsonSchemaGrammar {
           const maximum = frame.schema.maxProperties ?? Object.keys(properties).length;
           if (frame.phase === "key-or-end" || frame.phase === "key-required") {
             if (byte === 0x7d && frame.phase === "key-or-end") {
-              if (frame.used.length < minimum || required.some((name) => !frame.used.includes(name))) return false;
+              if (
+                frame.used.length < minimum ||
+                required.some((name) => !frame.used.includes(name))
+              )
+                return false;
               if (!validateEnum(frame.value, frame.schema)) return false;
               this.#finish(frame.value);
               return true;
@@ -439,7 +543,14 @@ export class JsonSchemaGrammar {
           if (frame.phase === "colon") {
             if (byte !== 0x3a || frame.currentKey === undefined) return false;
             frame.phase = "value";
-            this.#stack.push({ kind: "value", schema: properties[frame.currentKey] ?? (typeof frame.schema.additionalProperties === "object" ? frame.schema.additionalProperties : {}) });
+            this.#stack.push({
+              kind: "value",
+              schema:
+                properties[frame.currentKey] ??
+                (typeof frame.schema.additionalProperties === "object"
+                  ? frame.schema.additionalProperties
+                  : {}),
+            });
             return true;
           }
           if (frame.phase === "after-value") {
@@ -447,7 +558,11 @@ export class JsonSchemaGrammar {
               frame.phase = "key-required";
               return true;
             }
-            if (byte === 0x7d && frame.used.length >= minimum && required.every((name) => frame.used.includes(name))) {
+            if (
+              byte === 0x7d &&
+              frame.used.length >= minimum &&
+              required.every((name) => frame.used.includes(name))
+            ) {
               if (!validateEnum(frame.value, frame.schema)) return false;
               this.#finish(frame.value);
               return true;
@@ -458,16 +573,22 @@ export class JsonSchemaGrammar {
         }
         case "key": {
           if (byte === 0x22) {
-            const complete = frame.candidates.find((candidate) => candidate.offset === candidate.bytes.length);
+            const complete = frame.candidates.find(
+              (candidate) => candidate.offset === candidate.bytes.length,
+            );
             if (!complete) return false;
             this.#stack.pop();
             const parent = this.#stack[this.#stack.length - 1];
-            if (!parent || parent.kind !== "object") return false;
+            if (parent?.kind !== "object") return false;
             parent.currentKey = complete.name;
             parent.phase = "colon";
             return true;
           }
-          const continuing = frame.candidates.filter((candidate) => candidate.offset < candidate.bytes.length && candidate.bytes[candidate.offset] === byte);
+          const continuing = frame.candidates.filter(
+            (candidate) =>
+              candidate.offset < candidate.bytes.length &&
+              candidate.bytes[candidate.offset] === byte,
+          );
           if (continuing.length === 0) return false;
           for (const candidate of continuing) candidate.offset++;
           frame.candidates = continuing;
@@ -498,7 +619,10 @@ export class JsonSchemaGrammar {
       parent.phase = "after-value";
       return;
     }
-    throw new NeedleError("INVALID_TOOL_SCHEMA", "Internal JSON Schema grammar stack is inconsistent");
+    throw new NeedleError(
+      "INVALID_TOOL_SCHEMA",
+      "Internal JSON Schema grammar stack is inconsistent",
+    );
   }
 }
 
@@ -563,7 +687,10 @@ export class ToolCallGrammar {
     clone.#arguments = this.#arguments?.clone();
     clone.#calls = this.#calls.map((call) => ({
       name: call.name,
-      arguments: structuredValueClone(call.arguments as unknown as JsonValue) as Record<string, JsonValue>,
+      arguments: structuredValueClone(call.arguments as unknown as JsonValue) as Record<
+        string,
+        JsonValue
+      >,
     }));
     return clone;
   }
@@ -599,14 +726,19 @@ export class ToolCallGrammar {
       }
       if (this.phase === "tool-name") {
         if (byte === 0x22) {
-          const candidate = this.#nameCandidates.find((entry) => entry.offset === entry.bytes.length);
+          const candidate = this.#nameCandidates.find(
+            (entry) => entry.offset === entry.bytes.length,
+          );
           if (!candidate) return false;
           this.#currentTool = candidate.index;
           this.phase = "arguments-literal";
           this.#literalOffset = 0;
           return true;
         }
-        const continuing = this.#nameCandidates.filter((candidate) => candidate.offset < candidate.bytes.length && candidate.bytes[candidate.offset] === byte);
+        const continuing = this.#nameCandidates.filter(
+          (candidate) =>
+            candidate.offset < candidate.bytes.length && candidate.bytes[candidate.offset] === byte,
+        );
         if (continuing.length === 0) return false;
         for (const candidate of continuing) candidate.offset++;
         this.#nameCandidates = continuing;
@@ -636,7 +768,8 @@ export class ToolCallGrammar {
         if (byte !== 0x7d) return false;
         const tool = this.tools[this.#currentTool];
         const arguments_ = this.#arguments?.value;
-        if (!tool || !arguments_ || Array.isArray(arguments_) || typeof arguments_ !== "object") return false;
+        if (!tool || !arguments_ || Array.isArray(arguments_) || typeof arguments_ !== "object")
+          return false;
         this.#calls.push({ name: tool.name, arguments: arguments_ as Record<string, JsonValue> });
         this.#usedTools.push(this.#currentTool);
         this.phase = "after-call";
@@ -647,7 +780,11 @@ export class ToolCallGrammar {
           this.phase = "done";
           return true;
         }
-        if (byte === 0x2c && this.#calls.length < this.maximumCalls && this.#usedTools.length < this.tools.length) {
+        if (
+          byte === 0x2c &&
+          this.#calls.length < this.maximumCalls &&
+          this.#usedTools.length < this.tools.length
+        ) {
           this.phase = "call-open";
           return true;
         }

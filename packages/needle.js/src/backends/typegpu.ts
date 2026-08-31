@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" preserve="true" />
-import { tgpu, type TgpuRoot } from "typegpu";
+import { type TgpuRoot, tgpu } from "typegpu";
+import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
-import { NeedleError, invariant } from "../errors.js";
 import type { InferenceBackend, MatrixRowRange } from "./backend.js";
 import { dequantizeCqRow, prepareCqActivation } from "./cq.js";
 import { CQ_MATVEC_WGSL, matrixParameters, webGpuMatrixData } from "./webgpu-kernel.js";
@@ -56,14 +56,38 @@ export class TypeGPUBackend implements InferenceBackend {
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
-    this.#input = this.device.createBuffer({ label: "needle.typegpu.input", size: align4(maximumInput * 4), usage: STORAGE | COPY_DST });
-    this.#output = this.device.createBuffer({ label: "needle.typegpu.output", size: align4(maximumOutput * 4), usage: STORAGE | COPY_SRC });
-    this.#parameters = this.device.createBuffer({ label: "needle.typegpu.parameters", size: 32, usage: STORAGE | COPY_DST });
-    this.#codebook = bufferWithData(this.device, "needle.typegpu.codebook", weights.codebook, STORAGE | COPY_DST);
-    this.#staging = this.device.createBuffer({ label: "needle.typegpu.readback", size: align4(maximumOutput * 4), usage: MAP_READ | COPY_DST });
+    this.#input = this.device.createBuffer({
+      label: "needle.typegpu.input",
+      size: align4(maximumInput * 4),
+      usage: STORAGE | COPY_DST,
+    });
+    this.#output = this.device.createBuffer({
+      label: "needle.typegpu.output",
+      size: align4(maximumOutput * 4),
+      usage: STORAGE | COPY_SRC,
+    });
+    this.#parameters = this.device.createBuffer({
+      label: "needle.typegpu.parameters",
+      size: 32,
+      usage: STORAGE | COPY_DST,
+    });
+    this.#codebook = bufferWithData(
+      this.device,
+      "needle.typegpu.codebook",
+      weights.codebook,
+      STORAGE | COPY_DST,
+    );
+    this.#staging = this.device.createBuffer({
+      label: "needle.typegpu.readback",
+      size: align4(maximumOutput * 4),
+      usage: MAP_READ | COPY_DST,
+    });
   }
 
-  static async create(weights: CactWeights, options: TypeGPUBackendOptions = {}): Promise<TypeGPUBackend> {
+  static async create(
+    weights: CactWeights,
+    options: TypeGPUBackendOptions = {},
+  ): Promise<TypeGPUBackend> {
     let root: TgpuRoot;
     let ownsRoot = false;
     try {
@@ -77,7 +101,10 @@ export class TypeGPUBackend implements InferenceBackend {
         ownsRoot = true;
       }
       const shader = tgpu.resolve({ template: CQ_MATVEC_WGSL, externals: {} });
-      const module = root.device.createShaderModule({ label: "needle.typegpu.cq-matvec.shader", code: shader });
+      const module = root.device.createShaderModule({
+        label: "needle.typegpu.cq-matvec.shader",
+        code: shader,
+      });
       const descriptor: GPUComputePipelineDescriptor = {
         label: "needle.typegpu.cq-matvec.pipeline",
         layout: "auto",
@@ -89,15 +116,25 @@ export class TypeGPUBackend implements InferenceBackend {
       return new TypeGPUBackend(weights, root, ownsRoot, pipeline);
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
-      throw new NeedleError("WEBGPU_UNAVAILABLE", "Unable to initialize the TypeGPU backend", { cause });
+      throw new NeedleError("WEBGPU_UNAVAILABLE", "Unable to initialize the TypeGPU backend", {
+        cause,
+      });
     }
   }
 
-  async matvec(matrix: CqMatrix, input: Float32Array, range: MatrixRowRange = {}): Promise<Float32Array> {
+  async matvec(
+    matrix: CqMatrix,
+    input: Float32Array,
+    range: MatrixRowRange = {},
+  ): Promise<Float32Array> {
     invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "TypeGPU backend has been disposed");
     const rowStart = range.rowStart ?? 0;
     const rowCount = range.rowCount ?? matrix.outputSize - rowStart;
-    invariant(rowStart >= 0 && rowCount >= 0 && rowStart + rowCount <= matrix.outputSize, "INVALID_CACT", "Invalid TypeGPU matvec row range");
+    invariant(
+      rowStart >= 0 && rowCount >= 0 && rowStart + rowCount <= matrix.outputSize,
+      "INVALID_CACT",
+      "Invalid TypeGPU matvec row range",
+    );
     const prepared = prepareCqActivation(matrix, input);
     const gpuMatrix = this.#gpuMatrix(matrix);
     const parameters = matrixParameters(matrix, rowStart, rowCount);
@@ -154,8 +191,18 @@ export class TypeGPUBackend implements InferenceBackend {
     if (cached) return cached;
     const data = webGpuMatrixData(matrix);
     const result = {
-      packed: bufferWithData(this.device, `needle.typegpu.matrix.${matrix.record.index}.packed`, data.packedWords, STORAGE | COPY_DST),
-      norms: bufferWithData(this.device, `needle.typegpu.matrix.${matrix.record.index}.norms`, data.norms, STORAGE | COPY_DST),
+      packed: bufferWithData(
+        this.device,
+        `needle.typegpu.matrix.${matrix.record.index}.packed`,
+        data.packedWords,
+        STORAGE | COPY_DST,
+      ),
+      norms: bufferWithData(
+        this.device,
+        `needle.typegpu.matrix.${matrix.record.index}.norms`,
+        data.norms,
+        STORAGE | COPY_DST,
+      ),
     };
     this.#matrixCache.set(matrix, result);
     this.#allocatedMatrices.push(result);

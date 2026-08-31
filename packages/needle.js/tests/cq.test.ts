@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { cqMatvec, dequantizeCqRow, fastWalshHadamard } from "../src/backends/cq.js";
 import type { CactTensorRecord, CqMatrix } from "../src/model/cact.js";
 import { CactDType } from "../src/model/cact.js";
-import { cqMatvec, dequantizeCqRow, fastWalshHadamard } from "../src/backends/cq.js";
 import { numberToFloat16 } from "../src/model/fp16.js";
 
 function pack(indices: readonly number[], bits: number): Uint8Array {
-  const output = new Uint8Array(Math.ceil(indices.length * bits / 8));
+  const output = new Uint8Array(Math.ceil((indices.length * bits) / 8));
   indices.forEach((value, index) => {
     const bit = index * bits;
     const byte = bit >>> 3;
@@ -23,7 +23,7 @@ function matrix(bits: 2 | 3 | 4 | 5): CqMatrix {
   const max = bits === 5 ? 3 : 1 << bits;
   const indices = Array.from({ length: rows * group }, (_, index) => index % max);
   // Ternary record crumbs represent trit indices 0,1,2 as 3,0,1.
-  const encoded = bits === 5 ? indices.map((index) => index === 0 ? 3 : index - 1) : indices;
+  const encoded = bits === 5 ? indices.map((index) => (index === 0 ? 3 : index - 1)) : indices;
   const packed = pack(encoded, sourceBits);
   const normBytes = new ArrayBuffer(rows * 2);
   const normView = new DataView(normBytes);
@@ -51,7 +51,7 @@ function matrix(bits: 2 | 3 | 4 | 5): CqMatrix {
     inputSizePadded: group,
     groupSize: group,
     bits,
-    rowByteLength: group * sourceBits / 8,
+    rowByteLength: (group * sourceBits) / 8,
     packed,
     norms: normView,
     codebooks,
@@ -78,7 +78,8 @@ describe("Cactus Quants kernels", () => {
       for (let row = 0; row < current.outputSize; row++) {
         const weights = dequantizeCqRow(current, row);
         let expected = 0;
-        for (let index = 0; index < input.length; index++) expected += (weights[index] ?? 0) * (input[index] ?? 0);
+        for (let index = 0; index < input.length; index++)
+          expected += (weights[index] ?? 0) * (input[index] ?? 0);
         expect(direct[row]).toBeCloseTo(expected, 4);
       }
     });

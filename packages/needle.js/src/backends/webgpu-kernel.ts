@@ -70,10 +70,11 @@ export function webGpuMatrixData(matrix: CqMatrix): WebGpuMatrixData {
   const packedWords = new Uint32Array(Math.ceil(matrix.packed.byteLength / 4));
   const packedView = new DataView(packedWords.buffer);
   for (let offset = 0; offset < matrix.packed.byteLength; offset += 4) {
-    const word = (matrix.packed[offset] ?? 0)
-      | ((matrix.packed[offset + 1] ?? 0) << 8)
-      | ((matrix.packed[offset + 2] ?? 0) << 16)
-      | ((matrix.packed[offset + 3] ?? 0) << 24);
+    const word =
+      (matrix.packed[offset] ?? 0) |
+      ((matrix.packed[offset + 1] ?? 0) << 8) |
+      ((matrix.packed[offset + 2] ?? 0) << 16) |
+      ((matrix.packed[offset + 3] ?? 0) << 24);
     packedView.setUint32(offset, word >>> 0, true);
   }
   const normCount = matrix.norms.byteLength / 2;
@@ -86,7 +87,11 @@ export function webGpuMatrixData(matrix: CqMatrix): WebGpuMatrixData {
   return result;
 }
 
-export function matrixParameters(matrix: CqMatrix, rowStart: number, rowCount: number): Uint32Array {
+export function matrixParameters(
+  matrix: CqMatrix,
+  rowStart: number,
+  rowCount: number,
+): Uint32Array {
   return new Uint32Array([
     rowCount,
     rowStart,

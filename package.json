@@ -9,8 +9,14 @@
   ],
   "scripts": {
     "build": "bun run --filter '*' build",
+    "check": "biome check .",
     "clean": "bun run --filter '*' clean",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
     "test": "bun run --filter '*' test",
     "typecheck": "bun run --filter '*' typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.11"
   }
 }

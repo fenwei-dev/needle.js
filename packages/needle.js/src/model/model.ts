@@ -1,9 +1,9 @@
 import type { InferenceBackend } from "../backends/backend.js";
 import { CpuBackend } from "../backends/cpu.js";
-import { NeedleError, invariant } from "../errors.js";
+import { invariant, NeedleError } from "../errors.js";
 import type { LoadWeightsOptions, WeightSource } from "../weights/source.js";
 import { loadWeights } from "../weights/source.js";
-import { parseCact, type CactWeights } from "./cact.js";
+import { type CactWeights, parseCact } from "./cact.js";
 import { argmax, logSoftmaxAt } from "./math.js";
 import { NeedleRuntime, type RuntimeOptions } from "./runtime.js";
 import { BOS_TOKEN_ID, EOS_TOKEN_ID, NeedleTokenizer } from "./tokenizer.js";
@@ -71,7 +71,11 @@ export class NeedleModel {
     const bytes = await loadWeights(options.weights, options);
     const weights = parseCact(bytes);
     const tokenizer = new NeedleTokenizer(weights.tokenizerBlob);
-    invariant(tokenizer.vocabularySize === weights.geometry.vocabularySize, "INVALID_CACT", `Tokenizer has ${tokenizer.vocabularySize} pieces but model vocabulary is ${weights.geometry.vocabularySize}`);
+    invariant(
+      tokenizer.vocabularySize === weights.geometry.vocabularySize,
+      "INVALID_CACT",
+      `Tokenizer has ${tokenizer.vocabularySize} pieces but model vocabulary is ${weights.geometry.vocabularySize}`,
+    );
     const backend = await resolveBackend(weights, options.backend ?? "cpu", options.backendOptions);
     return new NeedleModel(weights, tokenizer, backend, options.runtime ?? {});
   }
@@ -86,12 +90,21 @@ export class NeedleModel {
     const started = performance.now();
     const maximumNewTokens = Math.max(0, options.maxNewTokens ?? 96);
     const promptIds = [BOS_TOKEN_ID, ...this.tokenizer.encode(prompt)];
-    const maximumLength = Math.min(this.weights.geometry.maximumSequenceLength, promptIds.length + maximumNewTokens);
+    const maximumLength = Math.min(
+      this.weights.geometry.maximumSequenceLength,
+      promptIds.length + maximumNewTokens,
+    );
     if (promptIds.length >= maximumLength && maximumNewTokens > 0) {
-      throw new NeedleError("CONTEXT_OVERFLOW", `Prompt has ${promptIds.length} tokens and leaves no generation room in a ${maximumLength}-token context`);
+      throw new NeedleError(
+        "CONTEXT_OVERFLOW",
+        `Prompt has ${promptIds.length} tokens and leaves no generation room in a ${maximumLength}-token context`,
+      );
     }
     const runtime = this.createRuntime({ collectConfidence: false });
-    runtime.reset({ maximumLength: Math.max(promptIds.length, maximumLength), sinkLength: options.sinkTokens ?? 0 });
+    runtime.reset({
+      maximumLength: Math.max(promptIds.length, maximumLength),
+      sinkLength: options.sinkTokens ?? 0,
+    });
     let logits = await runtime.prefill(promptIds, options.signal);
     const random = xorshift32(options.seed ?? 0x6d2b79f5);
     const ids: number[] = [];
@@ -152,7 +165,11 @@ async function resolveBackend(
   options: unknown,
 ): Promise<InferenceBackend> {
   if (typeof selection === "object") {
-    invariant(selection.weights === weights, "BACKEND_UNAVAILABLE", "Custom backend was initialized for different CactWeights");
+    invariant(
+      selection.weights === weights,
+      "BACKEND_UNAVAILABLE",
+      "Custom backend was initialized for different CactWeights",
+    );
     return selection;
   }
   if (selection === "cpu") return new CpuBackend(weights);
@@ -162,7 +179,11 @@ async function resolveBackend(
       return createTypeGPUBackend(weights, (options ?? {}) as never);
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
-      throw new NeedleError("BACKEND_UNAVAILABLE", "The typegpu backend requires the optional `typegpu` peer dependency and WebGPU", { cause });
+      throw new NeedleError(
+        "BACKEND_UNAVAILABLE",
+        "The typegpu backend requires the optional `typegpu` peer dependency and WebGPU",
+        { cause },
+      );
     }
   }
   if (selection === "vgpu") {
@@ -171,7 +192,11 @@ async function resolveBackend(
       return createVGPUBackend(weights, (options ?? {}) as never);
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
-      throw new NeedleError("BACKEND_UNAVAILABLE", "The vgpu backend requires the optional `vgpu` peer dependency and WebGPU", { cause });
+      throw new NeedleError(
+        "BACKEND_UNAVAILABLE",
+        "The vgpu backend requires the optional `vgpu` peer dependency and WebGPU",
+        { cause },
+      );
     }
   }
 
@@ -204,11 +229,17 @@ function xorshift32(seed: number): () => number {
   };
 }
 
-function sample(logits: Float32Array, temperature: number, topK: number, random: () => number): number {
+function sample(
+  logits: Float32Array,
+  temperature: number,
+  topK: number,
+  random: () => number,
+): number {
   if (!(temperature > 0)) return argmax(logits);
   const count = topK > 0 ? Math.min(Math.floor(topK), logits.length) : logits.length;
   const indices = Array.from({ length: logits.length }, (_, index) => index);
-  if (count < logits.length) indices.sort((left, right) => (logits[right] ?? 0) - (logits[left] ?? 0));
+  if (count < logits.length)
+    indices.sort((left, right) => (logits[right] ?? 0) - (logits[left] ?? 0));
   indices.length = count;
   let maximum = Number.NEGATIVE_INFINITY;
   for (const index of indices) maximum = Math.max(maximum, (logits[index] ?? 0) / temperature);

@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" preserve="true" />
 import type { Compute, Gpu, StorageBuffer } from "vgpu";
+import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
-import { NeedleError, invariant } from "../errors.js";
 import type { InferenceBackend, MatrixRowRange } from "./backend.js";
 import { dequantizeCqRow, prepareCqActivation } from "./cq.js";
 import { CQ_MATVEC_WGSL, matrixParameters, webGpuMatrixData } from "./webgpu-kernel.js";
@@ -65,9 +65,14 @@ export class VGPUBackend implements InferenceBackend {
     this.#compute = module.compute(gpu, CQ_MATVEC_WGSL, { label: "needle.vgpu.cq-matvec" });
   }
 
-  static async create(weights: CactWeights, options: VGPUBackendOptions = {}): Promise<VGPUBackend> {
+  static async create(
+    weights: CactWeights,
+    options: VGPUBackendOptions = {},
+  ): Promise<VGPUBackend> {
     try {
-      const useNode = options.node ?? (typeof process !== "undefined" && typeof process.versions?.node === "string");
+      const useNode =
+        options.node ??
+        (typeof process !== "undefined" && typeof process.versions?.node === "string");
       const imported = useNode ? await import("vgpu/node") : await import("vgpu");
       const module = imported as unknown as VgpuModule;
       let gpu: Gpu;
@@ -84,15 +89,25 @@ export class VGPUBackend implements InferenceBackend {
       return new VGPUBackend(weights, module, gpu, ownsGpu);
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
-      throw new NeedleError("WEBGPU_UNAVAILABLE", "Unable to initialize the vgpu backend", { cause });
+      throw new NeedleError("WEBGPU_UNAVAILABLE", "Unable to initialize the vgpu backend", {
+        cause,
+      });
     }
   }
 
-  async matvec(matrix: CqMatrix, input: Float32Array, range: MatrixRowRange = {}): Promise<Float32Array> {
+  async matvec(
+    matrix: CqMatrix,
+    input: Float32Array,
+    range: MatrixRowRange = {},
+  ): Promise<Float32Array> {
     invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "vgpu backend has been disposed");
     const rowStart = range.rowStart ?? 0;
     const rowCount = range.rowCount ?? matrix.outputSize - rowStart;
-    invariant(rowStart >= 0 && rowCount >= 0 && rowStart + rowCount <= matrix.outputSize, "INVALID_CACT", "Invalid vgpu matvec row range");
+    invariant(
+      rowStart >= 0 && rowCount >= 0 && rowStart + rowCount <= matrix.outputSize,
+      "INVALID_CACT",
+      "Invalid vgpu matvec row range",
+    );
     const prepared = prepareCqActivation(matrix, input);
     const gpuMatrix = this.#gpuMatrix(matrix);
     this.#input.write(ownedBuffer(prepared));

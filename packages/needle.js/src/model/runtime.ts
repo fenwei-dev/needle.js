@@ -1,6 +1,6 @@
 import type { InferenceBackend } from "../backends/backend.js";
 import { denseMatvec } from "../backends/cq.js";
-import { NeedleError, invariant } from "../errors.js";
+import { invariant, NeedleError } from "../errors.js";
 import type { CactProbeHead, CactWeights } from "./cact.js";
 import {
   applyRope,
@@ -20,7 +20,11 @@ export interface RuntimeOptions {
   readonly kvCache?: "int8" | "float32";
   /** Compute the optional post-hoc confidence head with online probe pooling. */
   readonly collectConfidence?: boolean;
-  readonly onLayer?: (event: { readonly position: number; readonly layer: number; readonly layers: number }) => void;
+  readonly onLayer?: (event: {
+    readonly position: number;
+    readonly layer: number;
+    readonly layers: number;
+  }) => void;
 }
 
 export interface RuntimeResetOptions {
@@ -60,13 +64,15 @@ class OnlineProbePool {
         const weight = Math.exp(score - previousMaximum);
         this.#denominator[probe] = (this.#denominator[probe] ?? 0) + weight;
         for (let index = 0; index < this.#dimension; index++) {
-          this.#weighted[weightedOffset + index] = (this.#weighted[weightedOffset + index] ?? 0) + weight * (cell[index] ?? 0);
+          this.#weighted[weightedOffset + index] =
+            (this.#weighted[weightedOffset + index] ?? 0) + weight * (cell[index] ?? 0);
         }
       } else {
         const oldWeight = Number.isFinite(previousMaximum) ? Math.exp(previousMaximum - score) : 0;
         this.#denominator[probe] = (this.#denominator[probe] ?? 0) * oldWeight + 1;
         for (let index = 0; index < this.#dimension; index++) {
-          this.#weighted[weightedOffset + index] = (this.#weighted[weightedOffset + index] ?? 0) * oldWeight + (cell[index] ?? 0);
+          this.#weighted[weightedOffset + index] =
+            (this.#weighted[weightedOffset + index] ?? 0) * oldWeight + (cell[index] ?? 0);
         }
         this.#maximum[probe] = score;
       }
@@ -125,17 +131,28 @@ export class NeedleRuntime {
 
   reset(options: RuntimeResetOptions): void {
     const geometry = this.weights.geometry;
-    invariant(Number.isInteger(options.maximumLength) && options.maximumLength > 0 && options.maximumLength <= geometry.maximumSequenceLength, "CONTEXT_OVERFLOW", `Runtime length ${options.maximumLength} is outside model limit ${geometry.maximumSequenceLength}`);
+    invariant(
+      Number.isInteger(options.maximumLength) &&
+        options.maximumLength > 0 &&
+        options.maximumLength <= geometry.maximumSequenceLength,
+      "CONTEXT_OVERFLOW",
+      `Runtime length ${options.maximumLength} is outside model limit ${geometry.maximumSequenceLength}`,
+    );
     this.#maximumLength = options.maximumLength;
     this.#sinkLength = Math.min(Math.max(options.sinkLength ?? 0, 0), options.maximumLength);
     this.#position = 0;
     this.#history = [];
 
     const window = geometry.kvWindow;
-    this.#kvAllocation = window > 0
-      ? Math.min(options.maximumLength, this.#sinkLength + window)
-      : options.maximumLength;
-    const kvElements = geometry.numberOfLayers * geometry.numberOfKVHeads * this.#kvAllocation * geometry.headDimension;
+    this.#kvAllocation =
+      window > 0
+        ? Math.min(options.maximumLength, this.#sinkLength + window)
+        : options.maximumLength;
+    const kvElements =
+      geometry.numberOfLayers *
+      geometry.numberOfKVHeads *
+      this.#kvAllocation *
+      geometry.headDimension;
     const scaleElements = geometry.numberOfLayers * geometry.numberOfKVHeads * this.#kvAllocation;
     if ((this.options.kvCache ?? "int8") === "float32") {
       this.#keyCacheFloat = new Float32Array(kvElements);
@@ -153,19 +170,26 @@ export class NeedleRuntime {
 
     const maximumOrder = Math.max(1, ...geometry.engramOrders);
     this.#engramDepth = (geometry.engramConvolutionTaps - 1) * maximumOrder + 1;
-    this.#engramRing = new Float32Array(geometry.engramLayers.length * this.#engramDepth * geometry.modelDimension);
+    this.#engramRing = new Float32Array(
+      geometry.engramLayers.length * this.#engramDepth * geometry.modelDimension,
+    );
     this.#engramValid = new Uint8Array(geometry.engramLayers.length * this.#engramDepth);
     this.#engramPosition = 0;
 
     const confidence = this.weights.heads.get("confidence");
-    this.#confidencePool = this.options.collectConfidence !== false && confidence
-      ? new OnlineProbePool(confidence, geometry.modelDimension)
-      : undefined;
+    this.#confidencePool =
+      this.options.collectConfidence !== false && confidence
+        ? new OnlineProbePool(confidence, geometry.modelDimension)
+        : undefined;
   }
 
   async prefill(tokens: readonly number[], signal?: AbortSignal): Promise<Float32Array> {
     invariant(tokens.length > 0, "INVALID_CACT", "Cannot prefill an empty token sequence");
-    invariant(this.#maximumLength >= tokens.length, "CONTEXT_OVERFLOW", `Prompt has ${tokens.length} tokens but runtime holds ${this.#maximumLength}`);
+    invariant(
+      this.#maximumLength >= tokens.length,
+      "CONTEXT_OVERFLOW",
+      `Prompt has ${tokens.length} tokens but runtime holds ${this.#maximumLength}`,
+    );
     let logits: Float32Array | null = null;
     for (let index = 0; index < tokens.length; index++) {
       logits = await this.step(tokens[index] ?? 0, {
@@ -181,11 +205,22 @@ export class NeedleRuntime {
     token: number,
     options: { readonly wantLogits?: boolean; readonly signal?: AbortSignal | undefined } = {},
   ): Promise<Float32Array | null> {
-    if (options.signal?.aborted) throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", { cause: options.signal.reason });
+    if (options.signal?.aborted)
+      throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
+        cause: options.signal.reason,
+      });
     const geometry = this.weights.geometry;
     invariant(this.#maximumLength > 0, "INVALID_CACT", "Call runtime.reset() before decoding");
-    invariant(this.#position < this.#maximumLength, "CONTEXT_OVERFLOW", `Position ${this.#position} reached runtime limit ${this.#maximumLength}`);
-    invariant(Number.isInteger(token) && token >= 0 && token < geometry.vocabularySize, "INVALID_CACT", `Token ${token} is outside the vocabulary`);
+    invariant(
+      this.#position < this.#maximumLength,
+      "CONTEXT_OVERFLOW",
+      `Position ${this.#position} reached runtime limit ${this.#maximumLength}`,
+    );
+    invariant(
+      Number.isInteger(token) && token >= 0 && token < geometry.vocabularySize,
+      "INVALID_CACT",
+      `Token ${token} is outside the vocabulary`,
+    );
 
     const position = this.#position;
     this.#history.push(token);
@@ -194,7 +229,8 @@ export class NeedleRuntime {
     const embedding = this.backend.row(this.weights.embedding, token);
     const scaledEmbedding = new Float32Array(dimension);
     const embeddingScale = Math.sqrt(dimension);
-    for (let index = 0; index < dimension; index++) scaledEmbedding[index] = (embedding[index] ?? 0) * embeddingScale;
+    for (let index = 0; index < dimension; index++)
+      scaledEmbedding[index] = (embedding[index] ?? 0) * embeddingScale;
     this.#confidencePool?.add(scaledEmbedding);
 
     let x = new Float32Array(lanes * dimension);
@@ -203,7 +239,10 @@ export class NeedleRuntime {
     const attentionWidth = geometry.numberOfHeads * geometry.headDimension;
 
     for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
-      if (options.signal?.aborted) throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", { cause: options.signal.reason });
+      if (options.signal?.aborted)
+        throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
+          cause: options.signal.reason,
+        });
       this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
       const layer = this.weights.layers[layerIndex];
       invariant(layer !== undefined, "INVALID_CACT", `Missing layer ${layerIndex}`);
@@ -227,15 +266,16 @@ export class NeedleRuntime {
       for (let lane = 0; lane < lanes; lane++) {
         const offset = lane === ownLane ? 4 : -4;
         hPre[lane] = sigmoid(
-          (this.weights.mhcAPre[layerIndex] ?? 0) * (phiPre[lane] ?? 0)
-            + (this.weights.mhcBPre[layerIndex * lanes + lane] ?? 0)
-            + offset,
+          (this.weights.mhcAPre[layerIndex] ?? 0) * (phiPre[lane] ?? 0) +
+            (this.weights.mhcBPre[layerIndex * lanes + lane] ?? 0) +
+            offset,
         );
       }
       const updateInput = new Float32Array(dimension);
       for (let column = 0; column < dimension; column++) {
         let sum = 0;
-        for (let lane = 0; lane < lanes; lane++) sum += (hPre[lane] ?? 0) * (x[lane * dimension + column] ?? 0);
+        for (let lane = 0; lane < lanes; lane++)
+          sum += (hPre[lane] ?? 0) * (x[lane * dimension + column] ?? 0);
         updateInput[column] = sum;
       }
 
@@ -248,10 +288,12 @@ export class NeedleRuntime {
           const normalizedInput = rmsUnit(updateInput);
           const normalizedKey = rmsUnit(key);
           let dot = 0;
-          for (let index = 0; index < dimension; index++) dot += (normalizedInput[index] ?? 0) * (normalizedKey[index] ?? 0);
+          for (let index = 0; index < dimension; index++)
+            dot += (normalizedInput[index] ?? 0) * (normalizedKey[index] ?? 0);
           const alpha = sigmoid(dot / Math.sqrt(dimension));
           blockInput = new Float32Array(dimension);
-          for (let index = 0; index < dimension; index++) blockInput[index] = (updateInput[index] ?? 0) + alpha * (value[index] ?? 0);
+          for (let index = 0; index < dimension; index++)
+            blockInput[index] = (updateInput[index] ?? 0) + alpha * (value[index] ?? 0);
         }
       }
 
@@ -261,22 +303,47 @@ export class NeedleRuntime {
       const key = await this.backend.matvec(layer.keyProjection, attentionInput);
       const value = await this.backend.matvec(layer.valueProjection, attentionInput);
       for (let head = 0; head < geometry.numberOfHeads; head++) {
-        this.#rmsNormSlice(query, head * geometry.headDimension, geometry.headDimension, layer.queryNorm);
+        this.#rmsNormSlice(
+          query,
+          head * geometry.headDimension,
+          geometry.headDimension,
+          layer.queryNorm,
+        );
       }
       for (let head = 0; head < geometry.numberOfKVHeads; head++) {
-        this.#rmsNormSlice(key, head * geometry.headDimension, geometry.headDimension, layer.keyNorm);
+        this.#rmsNormSlice(
+          key,
+          head * geometry.headDimension,
+          geometry.headDimension,
+          layer.keyNorm,
+        );
       }
-      applyRope(query, geometry.numberOfHeads, geometry.headDimension, position, geometry.ropeTheta);
-      applyRope(key, geometry.numberOfKVHeads, geometry.headDimension, position, geometry.ropeTheta);
+      applyRope(
+        query,
+        geometry.numberOfHeads,
+        geometry.headDimension,
+        position,
+        geometry.ropeTheta,
+      );
+      applyRope(
+        key,
+        geometry.numberOfKVHeads,
+        geometry.headDimension,
+        position,
+        geometry.ropeTheta,
+      );
       this.#storeKV(layerIndex, position, key, value);
       const attentionOutput = this.#attention(layerIndex, position, query);
       const gate = await this.backend.matvec(layer.gateProjection, attentionInput);
-      for (let index = 0; index < attentionWidth; index++) attentionOutput[index] = (attentionOutput[index] ?? 0) * sigmoid(gate[index] ?? 0);
+      for (let index = 0; index < attentionWidth; index++)
+        attentionOutput[index] = (attentionOutput[index] ?? 0) * sigmoid(gate[index] ?? 0);
       const projected = await this.backend.matvec(layer.outputProjection, attentionOutput);
       const normalizedProjected = rmsNorm(projected, layer.postAttentionNorm);
       const attentionScale = sigmoid(layer.attentionGate);
       const afterAttention = new Float32Array(dimension);
-      for (let index = 0; index < dimension; index++) afterAttention[index] = (blockInput[index] ?? 0) + attentionScale * (normalizedProjected[index] ?? 0);
+      for (let index = 0; index < dimension; index++)
+        afterAttention[index] =
+          (blockInput[index] ?? 0) + attentionScale * (normalizedProjected[index] ?? 0);
 
       const preHadamard = rmsNorm(afterAttention, layer.preHadamardNorm);
       const mlp = hadamardMlp(
@@ -294,16 +361,19 @@ export class NeedleRuntime {
       const hPost = new Float32Array(lanes);
       for (let lane = 0; lane < lanes; lane++) {
         const offset = lane === ownLane ? 0 : -4;
-        hPost[lane] = 2 * sigmoid(
-          (this.weights.mhcAPost[layerIndex] ?? 0) * (phiPost[lane] ?? 0)
-            + (this.weights.mhcBPost[layerIndex * lanes + lane] ?? 0)
-            + offset,
-        );
+        hPost[lane] =
+          2 *
+          sigmoid(
+            (this.weights.mhcAPost[layerIndex] ?? 0) * (phiPost[lane] ?? 0) +
+              (this.weights.mhcBPost[layerIndex * lanes + lane] ?? 0) +
+              offset,
+          );
       }
       const routing = new Float32Array(lanes * lanes);
       for (let index = 0; index < routing.length; index++) {
-        routing[index] = (this.weights.mhcAResidual[layerIndex] ?? 0) * (phiResidual[index] ?? 0)
-          + (this.weights.mhcBResidual[layerIndex * lanes * lanes + index] ?? 0);
+        routing[index] =
+          (this.weights.mhcAResidual[layerIndex] ?? 0) * (phiResidual[index] ?? 0) +
+          (this.weights.mhcBResidual[layerIndex * lanes * lanes + index] ?? 0);
       }
       sinkhorn(routing, lanes);
       const nextX = new Float32Array(x.length);
@@ -311,7 +381,8 @@ export class NeedleRuntime {
         for (let column = 0; column < dimension; column++) {
           let sum = 0;
           for (let sourceLane = 0; sourceLane < lanes; sourceLane++) {
-            sum += (routing[lane * lanes + sourceLane] ?? 0) * (x[sourceLane * dimension + column] ?? 0);
+            sum +=
+              (routing[lane * lanes + sourceLane] ?? 0) * (x[sourceLane * dimension + column] ?? 0);
           }
           nextX[lane * dimension + column] = sum + (hPost[lane] ?? 0) * (delta[column] ?? 0);
         }
@@ -365,7 +436,10 @@ export class NeedleRuntime {
 
   #cacheBase(layer: number, head: number, slot: number): number {
     const geometry = this.weights.geometry;
-    return (((layer * geometry.numberOfKVHeads + head) * this.#kvAllocation + slot) * geometry.headDimension);
+    return (
+      ((layer * geometry.numberOfKVHeads + head) * this.#kvAllocation + slot) *
+      geometry.headDimension
+    );
   }
 
   #scaleIndex(layer: number, head: number, slot: number): number {
@@ -402,8 +476,12 @@ export class NeedleRuntime {
         this.#keyScale[scaleOffset] = keyScale;
         this.#valueScale[scaleOffset] = valueScale;
         for (let index = 0; index < geometry.headDimension; index++) {
-          keyCache[cacheOffset + index] = roundTiesToEven((key[vectorOffset + index] ?? 0) / keyScale);
-          valueCache[cacheOffset + index] = roundTiesToEven((value[vectorOffset + index] ?? 0) / valueScale);
+          keyCache[cacheOffset + index] = roundTiesToEven(
+            (key[vectorOffset + index] ?? 0) / keyScale,
+          );
+          valueCache[cacheOffset + index] = roundTiesToEven(
+            (value[vectorOffset + index] ?? 0) / valueScale,
+          );
         }
       }
     }
@@ -414,9 +492,8 @@ export class NeedleRuntime {
     const repetitions = geometry.numberOfHeads / geometry.numberOfKVHeads;
     const output = new Float32Array(geometry.numberOfHeads * geometry.headDimension);
     const prefixCount = Math.min(this.#sinkLength, position + 1);
-    const recentLow = geometry.kvWindow > 0
-      ? Math.max(prefixCount, position + 1 - geometry.kvWindow)
-      : prefixCount;
+    const recentLow =
+      geometry.kvWindow > 0 ? Math.max(prefixCount, position + 1 - geometry.kvWindow) : prefixCount;
     const logicalPositions: number[] = [];
     for (let index = 0; index < prefixCount; index++) logicalPositions.push(index);
     for (let index = recentLow; index <= position; index++) logicalPositions.push(index);
@@ -436,13 +513,15 @@ export class NeedleRuntime {
           let dot = 0;
           if (this.#keyCacheFloat) {
             for (let index = 0; index < geometry.headDimension; index++) {
-              dot += (query[queryOffset + index] ?? 0) * (this.#keyCacheFloat[cacheOffset + index] ?? 0);
+              dot +=
+                (query[queryOffset + index] ?? 0) * (this.#keyCacheFloat[cacheOffset + index] ?? 0);
             }
           } else {
             const cache = this.#keyCacheInt8;
             invariant(cache, "INVALID_CACT", "Int8 key cache is missing");
             for (let index = 0; index < geometry.headDimension; index++) {
-              dot += (query[queryOffset + index] ?? 0) * (cache[cacheOffset + index] ?? 0) * keyScale;
+              dot +=
+                (query[queryOffset + index] ?? 0) * (cache[cacheOffset + index] ?? 0) * keyScale;
             }
           }
           scores[time] = dot * inverseRoot;
@@ -457,16 +536,18 @@ export class NeedleRuntime {
           const weight = scores[time] ?? 0;
           if (this.#valueCacheFloat) {
             for (let index = 0; index < geometry.headDimension; index++) {
-              output[outputOffset + index] = (output[outputOffset + index] ?? 0)
-                + weight * (this.#valueCacheFloat[cacheOffset + index] ?? 0);
+              output[outputOffset + index] =
+                (output[outputOffset + index] ?? 0) +
+                weight * (this.#valueCacheFloat[cacheOffset + index] ?? 0);
             }
           } else {
             const cache = this.#valueCacheInt8;
             invariant(cache, "INVALID_CACT", "Int8 value cache is missing");
             const valueScale = this.#valueScale[scaleOffset] ?? 1;
             for (let index = 0; index < geometry.headDimension; index++) {
-              output[outputOffset + index] = (output[outputOffset + index] ?? 0)
-                + weight * (cache[cacheOffset + index] ?? 0) * valueScale;
+              output[outputOffset + index] =
+                (output[outputOffset + index] ?? 0) +
+                weight * (cache[cacheOffset + index] ?? 0) * valueScale;
             }
           }
         }
@@ -479,7 +560,11 @@ export class NeedleRuntime {
     const geometry = this.weights.geometry;
     if (geometry.engramLayers.length === 0) return [[], []];
     const headsPerOrder = geometry.numberOfEngramTables / geometry.engramOrders.length;
-    invariant(Number.isInteger(headsPerOrder), "INVALID_CACT", "Engram table count is not divisible by order count");
+    invariant(
+      Number.isInteger(headsPerOrder),
+      "INVALID_CACT",
+      "Engram table count is not divisible by order count",
+    );
     const indices: number[] = [];
     const valid: boolean[] = [];
     for (let orderIndex = 0; orderIndex < geometry.engramOrders.length; orderIndex++) {
@@ -505,7 +590,9 @@ export class NeedleRuntime {
     for (let siteIndex = 0; siteIndex < this.weights.engrams.length; siteIndex++) {
       const site = this.weights.engrams[siteIndex];
       invariant(site, "INVALID_CACT", `Missing engram site ${siteIndex}`);
-      const concatenated = new Float32Array(geometry.numberOfEngramTables * geometry.engramSubDimension);
+      const concatenated = new Float32Array(
+        geometry.numberOfEngramTables * geometry.engramSubDimension,
+      );
       for (let table = 0; table < geometry.numberOfEngramTables; table++) {
         if (valid[table]) {
           const row = table * geometry.engramSlots + (indices[table] ?? 0);
@@ -526,11 +613,13 @@ export class NeedleRuntime {
         if (previousPosition < 0) continue;
         const previousSlot = previousPosition % this.#engramDepth;
         if (!this.#engramValid[siteIndex * this.#engramDepth + previousSlot]) continue;
-        const previousOffset = (siteIndex * this.#engramDepth + previousSlot) * geometry.modelDimension;
+        const previousOffset =
+          (siteIndex * this.#engramDepth + previousSlot) * geometry.modelDimension;
         const tapOffset = tap * geometry.modelDimension;
         for (let index = 0; index < geometry.modelDimension; index++) {
-          mixed[index] = (mixed[index] ?? 0)
-            + (site.taps[tapOffset + index] ?? 0) * (this.#engramRing[previousOffset + index] ?? 0);
+          mixed[index] =
+            (mixed[index] ?? 0) +
+            (site.taps[tapOffset + index] ?? 0) * (this.#engramRing[previousOffset + index] ?? 0);
         }
       }
       values.push(mixed);

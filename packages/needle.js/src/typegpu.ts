@@ -1,7 +1,8 @@
 export * from "./index.js";
-import { Needle, type NeedleOptions } from "./tools/agent.js";
-import { NeedleModel, type LoadModelOptions } from "./model/model.js";
+
 import type { TypeGPUBackendOptions } from "./backends/typegpu.js";
+import { type LoadModelOptions, NeedleModel } from "./model/model.js";
+import { Needle, type NeedleOptions } from "./tools/agent.js";
 
 export async function loadNeedleTypeGPU(
   options: LoadModelOptions & { readonly backendOptions?: TypeGPUBackendOptions } = {},
@@ -16,7 +17,7 @@ export async function createNeedleTypeGPU(
 }
 
 export {
-  TypeGPUBackend,
   createTypeGPUBackend,
+  TypeGPUBackend,
   type TypeGPUBackendOptions,
 } from "./backends/typegpu.js";

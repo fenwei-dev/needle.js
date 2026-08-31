@@ -1,14 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import {
-  NeedleTokenizer,
-  TokenPieceType,
-  type TokenizerMetadata,
-} from "../src/model/tokenizer.js";
+import { NeedleTokenizer, type TokenizerMetadata, TokenPieceType } from "../src/model/tokenizer.js";
 
 function tokenizer(): NeedleTokenizer {
   const pieces = [
-    "<pad>", "</s>", "<s>", "<unk>", "<tool_call>", "▁", "h", "e", "l", "o",
-    "he", "ll", "hell", "hello", "▁hello",
+    "<pad>",
+    "</s>",
+    "<s>",
+    "<unk>",
+    "<tool_call>",
+    "▁",
+    "h",
+    "e",
+    "l",
+    "o",
+    "he",
+    "ll",
+    "hell",
+    "hello",
+    "▁hello",
   ];
   const types = [
     TokenPieceType.Control,

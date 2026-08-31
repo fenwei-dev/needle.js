@@ -1,4 +1,4 @@
-import { NeedleError, invariant } from "../errors.js";
+import { invariant, NeedleError } from "../errors.js";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
@@ -9,7 +9,15 @@ export interface JsonSchema {
   readonly definitions?: Readonly<Record<string, JsonSchema>>;
   readonly title?: string;
   readonly description?: string;
-  readonly type?: "null" | "boolean" | "object" | "array" | "number" | "integer" | "string" | readonly ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string")[];
+  readonly type?:
+    | "null"
+    | "boolean"
+    | "object"
+    | "array"
+    | "number"
+    | "integer"
+    | "string"
+    | readonly ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string")[];
   readonly enum?: readonly JsonValue[];
   readonly const?: JsonValue;
   readonly anyOf?: readonly JsonSchema[];
@@ -34,11 +42,17 @@ export interface JsonSchema {
   readonly maxProperties?: number;
 }
 
-export interface NeedleTool<Arguments extends Record<string, unknown> = Record<string, unknown>, Result = unknown> {
+export interface NeedleTool<
+  Arguments extends Record<string, unknown> = Record<string, unknown>,
+  Result = unknown,
+> {
   readonly name: string;
   readonly description?: string;
   readonly parameters: JsonSchema & { readonly type: "object" };
-  readonly execute?: (arguments_: Arguments, context: ToolExecutionContext) => Result | Promise<Result>;
+  readonly execute?: (
+    arguments_: Arguments,
+    context: ToolExecutionContext,
+  ) => Result | Promise<Result>;
 }
 
 export interface ToolExecutionContext {
@@ -60,16 +74,22 @@ export interface RawNeedleTool {
   readonly name: string;
   readonly description?: string;
   readonly parameters?: JsonSchema;
-  readonly execute?: (arguments_: Record<string, unknown>, context: ToolExecutionContext) => unknown | Promise<unknown>;
+  readonly execute?: (
+    arguments_: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ) => unknown | Promise<unknown>;
 }
 
-export type ToolInput = NeedleTool<any, any> | RawNeedleTool | OpenAIFunctionTool;
+export type ToolInput = NeedleTool<never, unknown> | RawNeedleTool | OpenAIFunctionTool;
 
 export interface DefineToolOptions<Arguments extends Record<string, unknown>, Result> {
   readonly name: string;
   readonly description?: string;
   readonly parameters: JsonSchema & { readonly type: "object" };
-  readonly execute?: (arguments_: Arguments, context: ToolExecutionContext) => Result | Promise<Result>;
+  readonly execute?: (
+    arguments_: Arguments,
+    context: ToolExecutionContext,
+  ) => Result | Promise<Result>;
 }
 
 /** Defines a schema and its implementation while retaining argument/result types. */
@@ -95,29 +115,72 @@ export function tool<Arguments extends Record<string, unknown>, Result = unknown
   });
 }
 
+function containsUnsafeNameCharacter(value: string): boolean {
+  for (const character of value) {
+    if (character === '"' || character === "\\" || character.charCodeAt(0) < 0x20) return true;
+  }
+  return false;
+}
+
 function validateToolName(name: string): void {
-  invariant(typeof name === "string" && name.length > 0 && name.length <= 128, "INVALID_TOOL_SCHEMA", "A tool name must contain 1–128 characters");
-  invariant(!/["\\\u0000-\u001f]/.test(name), "INVALID_TOOL_SCHEMA", `Tool name ${JSON.stringify(name)} contains characters that cannot be constrained safely`);
+  invariant(
+    typeof name === "string" && name.length > 0 && name.length <= 128,
+    "INVALID_TOOL_SCHEMA",
+    "A tool name must contain 1–128 characters",
+  );
+  invariant(
+    !containsUnsafeNameCharacter(name),
+    "INVALID_TOOL_SCHEMA",
+    `Tool name ${JSON.stringify(name)} contains characters that cannot be constrained safely`,
+  );
 }
 
 export function normalizeTool(input: ToolInput): NeedleTool {
-  const raw: RawNeedleTool = "function" in input
-    ? {
-        name: input.function.name,
-        ...(input.function.description === undefined ? {} : { description: input.function.description }),
-        ...(input.function.parameters === undefined ? {} : { parameters: input.function.parameters }),
-      }
-    : input;
+  const raw: RawNeedleTool =
+    "function" in input
+      ? {
+          name: input.function.name,
+          ...(input.function.description === undefined
+            ? {}
+            : { description: input.function.description }),
+          ...(input.function.parameters === undefined
+            ? {}
+            : { parameters: input.function.parameters }),
+        }
+      : {
+          name: input.name,
+          ...(input.description === undefined ? {} : { description: input.description }),
+          ...(input.parameters === undefined ? {} : { parameters: input.parameters }),
+          ...(input.execute === undefined
+            ? {}
+            : { execute: input.execute as NonNullable<RawNeedleTool["execute"]> }),
+        };
   validateToolName(raw.name);
   const parameters = raw.parameters ?? { type: "object", properties: {} };
-  invariant(parameters.type === "object" || parameters.type === undefined, "INVALID_TOOL_SCHEMA", `Tool ${raw.name} parameters must be an object schema`);
+  invariant(
+    parameters.type === "object" || parameters.type === undefined,
+    "INVALID_TOOL_SCHEMA",
+    `Tool ${raw.name} parameters must be an object schema`,
+  );
   const properties = parameters.properties ?? {};
   for (const [name, schema] of Object.entries(properties)) {
-    invariant(name.length > 0 && !/["\\\u0000-\u001f]/.test(name), "INVALID_TOOL_SCHEMA", `Tool ${raw.name} has an invalid parameter name ${JSON.stringify(name)}`);
-    invariant(schema && typeof schema === "object", "INVALID_TOOL_SCHEMA", `Tool ${raw.name} parameter ${name} has no schema`);
+    invariant(
+      name.length > 0 && !containsUnsafeNameCharacter(name),
+      "INVALID_TOOL_SCHEMA",
+      `Tool ${raw.name} has an invalid parameter name ${JSON.stringify(name)}`,
+    );
+    invariant(
+      schema && typeof schema === "object",
+      "INVALID_TOOL_SCHEMA",
+      `Tool ${raw.name} parameter ${name} has no schema`,
+    );
   }
   for (const name of parameters.required ?? []) {
-    invariant(name in properties, "INVALID_TOOL_SCHEMA", `Tool ${raw.name} requires unknown parameter ${name}`);
+    invariant(
+      name in properties,
+      "INVALID_TOOL_SCHEMA",
+      `Tool ${raw.name} requires unknown parameter ${name}`,
+    );
   }
   return {
     name: raw.name,
@@ -131,7 +194,8 @@ export function normalizeTools(inputs: readonly ToolInput[]): NeedleTool[] {
   const tools = inputs.map(normalizeTool);
   const names = new Set<string>();
   for (const current of tools) {
-    if (names.has(current.name)) throw new NeedleError("INVALID_TOOL_SCHEMA", `Duplicate tool name ${current.name}`);
+    if (names.has(current.name))
+      throw new NeedleError("INVALID_TOOL_SCHEMA", `Duplicate tool name ${current.name}`);
     names.add(current.name);
   }
   return tools;
@@ -139,9 +203,11 @@ export function normalizeTools(inputs: readonly ToolInput[]): NeedleTool[] {
 
 /** Removes executable functions and emits the compact format used in prompts. */
 export function serializeTools(tools: readonly NeedleTool[]): string {
-  return JSON.stringify(tools.map(({ name, description, parameters }) => ({
-    name,
-    ...(description === undefined ? {} : { description }),
-    parameters,
-  })));
+  return JSON.stringify(
+    tools.map(({ name, description, parameters }) => ({
+      name,
+      ...(description === undefined ? {} : { description }),
+      parameters,
+    })),
+  );
 }

@@ -1,8 +1,5 @@
-import { NeedleError, invariant } from "../errors.js";
-import {
-  embeddedModelBase64Chunks,
-  embeddedModelSha256,
-} from "./embedded-model.js";
+import { invariant, NeedleError } from "../errors.js";
+import { embeddedModelBase64Chunks, embeddedModelSha256 } from "./embedded-model.js";
 
 export const NEEDLE_2_REPOSITORY = "Cactus-Compute/needle2";
 export const NEEDLE_2_REVISION = "98fbd955b0347e78059be0c253cc1ffa09b87bc7";
@@ -80,7 +77,11 @@ function looksLikeUrl(value: string): boolean {
 function normalizeHash(hash: string | undefined): string | undefined {
   if (!hash) return undefined;
   const value = hash.toLowerCase().replace(/^sha256[:-]?/, "");
-  invariant(/^[0-9a-f]{64}$/.test(value), "WEIGHTS_INTEGRITY", `Invalid SHA-256 value ${JSON.stringify(hash)}`);
+  invariant(
+    /^[0-9a-f]{64}$/.test(value),
+    "WEIGHTS_INTEGRITY",
+    `Invalid SHA-256 value ${JSON.stringify(hash)}`,
+  );
   return value;
 }
 
@@ -88,7 +89,9 @@ export async function sha256(bytes: Uint8Array): Promise<string> {
   if (globalThis.crypto?.subtle) {
     // Copying avoids runtimes whose BufferSource typing rejects SharedArrayBuffer-backed views.
     const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes.slice().buffer);
-    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
   }
   if (isNodeRuntime()) {
     const { createHash } = await import("node:crypto");
@@ -97,15 +100,25 @@ export async function sha256(bytes: Uint8Array): Promise<string> {
   throw new NeedleError("WEIGHTS_INTEGRITY", "This runtime has no SHA-256 implementation");
 }
 
-async function verify(bytes: Uint8Array, expectedHash?: string, expectedBytes?: number): Promise<Uint8Array> {
+async function verify(
+  bytes: Uint8Array,
+  expectedHash?: string,
+  expectedBytes?: number,
+): Promise<Uint8Array> {
   if (expectedBytes !== undefined && bytes.byteLength !== expectedBytes) {
-    throw new NeedleError("WEIGHTS_INTEGRITY", `Model has ${bytes.byteLength} bytes; expected ${expectedBytes}`);
+    throw new NeedleError(
+      "WEIGHTS_INTEGRITY",
+      `Model has ${bytes.byteLength} bytes; expected ${expectedBytes}`,
+    );
   }
   const normalized = normalizeHash(expectedHash);
   if (normalized) {
     const actual = await sha256(bytes);
     if (actual !== normalized) {
-      throw new NeedleError("WEIGHTS_INTEGRITY", `Model SHA-256 is ${actual}; expected ${normalized}`);
+      throw new NeedleError(
+        "WEIGHTS_INTEGRITY",
+        `Model SHA-256 is ${actual}; expected ${normalized}`,
+      );
     }
   }
   return bytes;
@@ -141,7 +154,7 @@ export function getEmbeddedWeights(): Uint8Array {
   if (!embeddedModelBase64Chunks) {
     throw new NeedleError(
       "WEIGHTS_NOT_FOUND",
-      "This build does not contain embedded weights. Run `bun run embed:model /path/to/needle2.cact` before building, pass bytes explicitly, or use source: \"download\".",
+      'This build does not contain embedded weights. Run `bun run embed:model /path/to/needle2.cact` before building, pass bytes explicitly, or use source: "download".',
     );
   }
   const key = `embedded:${embeddedModelSha256 ?? "unversioned"}`;
@@ -152,34 +165,64 @@ export function getEmbeddedWeights(): Uint8Array {
   return bytes;
 }
 
-async function readFileSource(source: FileWeightSource, options: LoadWeightsOptions): Promise<Uint8Array> {
-  if (!isNodeRuntime()) throw new NeedleError("WEIGHTS_NOT_FOUND", "File weight sources are only available in Node.js/Bun");
+async function readFileSource(
+  source: FileWeightSource,
+  options: LoadWeightsOptions,
+): Promise<Uint8Array> {
+  if (!isNodeRuntime())
+    throw new NeedleError(
+      "WEIGHTS_NOT_FOUND",
+      "File weight sources are only available in Node.js/Bun",
+    );
   const { readFile } = await import("node:fs/promises");
   try {
     const data = await readFile(source.path);
     const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    options.onProgress?.({ loaded: bytes.byteLength, total: bytes.byteLength, source: String(source.path), cached: true });
+    options.onProgress?.({
+      loaded: bytes.byteLength,
+      total: bytes.byteLength,
+      source: String(source.path),
+      cached: true,
+    });
     return verify(bytes, source.sha256);
   } catch (cause) {
     if (cause instanceof NeedleError) throw cause;
-    throw new NeedleError("WEIGHTS_NOT_FOUND", `Unable to read model weights from ${String(source.path)}`, { cause });
+    throw new NeedleError(
+      "WEIGHTS_NOT_FOUND",
+      `Unable to read model weights from ${String(source.path)}`,
+      { cause },
+    );
   }
 }
 
-async function defaultNodeCachePath(source: UrlWeightSource, options: LoadWeightsOptions): Promise<string> {
+async function defaultNodeCachePath(
+  source: UrlWeightSource,
+  options: LoadWeightsOptions,
+): Promise<string> {
   const [{ homedir }, path] = await Promise.all([import("node:os"), import("node:path")]);
-  const root = source.cacheDir ?? options.cacheDir ?? path.join(homedir(), ".cache", "needle.js", "models");
-  const key = normalizeHash(source.sha256) ?? (await sha256(new TextEncoder().encode(String(source.url))));
+  const root =
+    source.cacheDir ?? options.cacheDir ?? path.join(homedir(), ".cache", "needle.js", "models");
+  const key =
+    normalizeHash(source.sha256) ?? (await sha256(new TextEncoder().encode(String(source.url))));
   return path.join(root, `${key}.cact`);
 }
 
-async function readNodeCache(path: string, source: UrlWeightSource, options: LoadWeightsOptions): Promise<Uint8Array | undefined> {
+async function readNodeCache(
+  path: string,
+  source: UrlWeightSource,
+  options: LoadWeightsOptions,
+): Promise<Uint8Array | undefined> {
   try {
     const { readFile } = await import("node:fs/promises");
     const data = await readFile(path);
     const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     await verify(bytes, source.sha256, source.byteLength);
-    options.onProgress?.({ loaded: bytes.byteLength, total: bytes.byteLength, source: String(source.url), cached: true });
+    options.onProgress?.({
+      loaded: bytes.byteLength,
+      total: bytes.byteLength,
+      source: String(source.url),
+      cached: true,
+    });
     return bytes;
   } catch {
     // Remove stale/truncated entries so a subsequent atomic rename can repair
@@ -221,9 +264,13 @@ async function writeNodeCache(path: string, bytes: Uint8Array): Promise<void> {
   }
 }
 
-async function fetchBytes(source: UrlWeightSource, options: LoadWeightsOptions): Promise<Uint8Array> {
+async function fetchBytes(
+  source: UrlWeightSource,
+  options: LoadWeightsOptions,
+): Promise<Uint8Array> {
   const fetchImplementation = options.fetch ?? globalThis.fetch;
-  if (!fetchImplementation) throw new NeedleError("WEIGHTS_NOT_FOUND", "This runtime has no fetch implementation");
+  if (!fetchImplementation)
+    throw new NeedleError("WEIGHTS_NOT_FOUND", "This runtime has no fetch implementation");
   let response: Response;
   try {
     response = await fetchImplementation(source.url, {
@@ -231,14 +278,29 @@ async function fetchBytes(source: UrlWeightSource, options: LoadWeightsOptions):
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
   } catch (cause) {
-    throw new NeedleError("WEIGHTS_NOT_FOUND", `Unable to download model from ${String(source.url)}`, { cause });
+    throw new NeedleError(
+      "WEIGHTS_NOT_FOUND",
+      `Unable to download model from ${String(source.url)}`,
+      { cause },
+    );
   }
-  if (!response.ok) throw new NeedleError("WEIGHTS_NOT_FOUND", `Model download failed: HTTP ${response.status} ${response.statusText}`);
+  if (!response.ok)
+    throw new NeedleError(
+      "WEIGHTS_NOT_FOUND",
+      `Model download failed: HTTP ${response.status} ${response.statusText}`,
+    );
   const totalHeader = Number(response.headers.get("content-length"));
-  const total = source.byteLength ?? (Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : undefined);
+  const total =
+    source.byteLength ??
+    (Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : undefined);
   if (!response.body) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    options.onProgress?.({ loaded: bytes.byteLength, ...(total === undefined ? {} : { total }), source: String(source.url), cached: false });
+    options.onProgress?.({
+      loaded: bytes.byteLength,
+      ...(total === undefined ? {} : { total }),
+      source: String(source.url),
+      cached: false,
+    });
     return bytes;
   }
 
@@ -251,7 +313,12 @@ async function fetchBytes(source: UrlWeightSource, options: LoadWeightsOptions):
     if (value) {
       chunks.push(value);
       loaded += value.byteLength;
-      options.onProgress?.({ loaded, ...(total === undefined ? {} : { total }), source: String(source.url), cached: false });
+      options.onProgress?.({
+        loaded,
+        ...(total === undefined ? {} : { total }),
+        source: String(source.url),
+        cached: false,
+      });
     }
   }
   const bytes = new Uint8Array(loaded);
@@ -273,17 +340,28 @@ async function readBrowserCache(source: UrlWeightSource): Promise<Uint8Array | u
 async function writeBrowserCache(source: UrlWeightSource, bytes: Uint8Array): Promise<void> {
   if (typeof caches === "undefined") return;
   const cache = await caches.open("needle.js-models-v1");
-  await cache.put(String(source.url), new Response(bytes.slice().buffer, {
-    headers: { "content-type": "application/octet-stream" },
-  }));
+  await cache.put(
+    String(source.url),
+    new Response(bytes.slice().buffer, {
+      headers: { "content-type": "application/octet-stream" },
+    }),
+  );
 }
 
-async function loadUrlSource(source: UrlWeightSource, options: LoadWeightsOptions): Promise<Uint8Array> {
+async function loadUrlSource(
+  source: UrlWeightSource,
+  options: LoadWeightsOptions,
+): Promise<Uint8Array> {
   const cacheEnabled = source.cache ?? options.cache ?? true;
   const cacheKey = `${String(source.url)}#${source.sha256 ?? ""}`;
   const memory = memoryCache.get(cacheKey);
   if (memory) {
-    options.onProgress?.({ loaded: memory.byteLength, total: source.byteLength ?? memory.byteLength, source: String(source.url), cached: true });
+    options.onProgress?.({
+      loaded: memory.byteLength,
+      total: source.byteLength ?? memory.byteLength,
+      source: String(source.url),
+      cached: true,
+    });
     return memory;
   }
 
@@ -300,7 +378,12 @@ async function loadUrlSource(source: UrlWeightSource, options: LoadWeightsOption
       const cached = await readBrowserCache(source);
       if (cached) {
         await verify(cached, source.sha256, source.byteLength);
-        options.onProgress?.({ loaded: cached.byteLength, total: source.byteLength ?? cached.byteLength, source: String(source.url), cached: true });
+        options.onProgress?.({
+          loaded: cached.byteLength,
+          total: source.byteLength ?? cached.byteLength,
+          source: String(source.url),
+          cached: true,
+        });
         memoryCache.set(cacheKey, cached);
         return cached;
       }
@@ -319,7 +402,9 @@ async function loadUrlSource(source: UrlWeightSource, options: LoadWeightsOption
   return downloaded;
 }
 
-function normalizeSource(source: WeightSource): UrlWeightSource | FileWeightSource | EmbeddedWeightSource | ArrayBuffer | ArrayBufferView {
+function normalizeSource(
+  source: WeightSource,
+): UrlWeightSource | FileWeightSource | EmbeddedWeightSource | ArrayBuffer | ArrayBufferView {
   if (source === "download") {
     return {
       kind: "url",
@@ -364,7 +449,12 @@ export async function loadWeights(
     bytes = copyView(normalized.data);
   }
   await verify(bytes, normalized.sha256 ?? embeddedModelSha256 ?? undefined);
-  options.onProgress?.({ loaded: bytes.byteLength, total: bytes.byteLength, source: "embedded", cached: true });
+  options.onProgress?.({
+    loaded: bytes.byteLength,
+    total: bytes.byteLength,
+    source: "embedded",
+    cached: true,
+  });
   return bytes;
 }
 

@@ -1,11 +1,11 @@
-import { NeedleError, invariant } from "../errors.js";
+import { invariant, NeedleError } from "../errors.js";
 import { decodeFloat16Array } from "./fp16.js";
 
 export const CACT_TAG = 0x05e12a83;
 export const CACT_HEADER_BYTES = 120;
 export const CACT_RECORD_BYTES = 44;
 
-export const enum CactDType {
+export enum CactDType {
   Float16 = 1,
   Float32 = 2,
   CactusQuant = 3,
@@ -139,9 +139,17 @@ export interface CactWeights {
 function product(shape: readonly number[]): number {
   let result = 1;
   for (const value of shape) {
-    invariant(Number.isSafeInteger(value) && value >= 0, "INVALID_CACT", `Invalid tensor dimension ${value}`);
+    invariant(
+      Number.isSafeInteger(value) && value >= 0,
+      "INVALID_CACT",
+      `Invalid tensor dimension ${value}`,
+    );
     result *= value;
-    invariant(Number.isSafeInteger(result), "INVALID_CACT", "Tensor element count exceeds JavaScript's safe integer range");
+    invariant(
+      Number.isSafeInteger(result),
+      "INVALID_CACT",
+      "Tensor element count exceeds JavaScript's safe integer range",
+    );
   }
   return result;
 }
@@ -153,7 +161,11 @@ function asBytes(source: ArrayBuffer | ArrayBufferView): Uint8Array {
 
 function assertRange(bytes: Uint8Array, offset: number, length: number, label: string): void {
   invariant(
-    Number.isSafeInteger(offset) && Number.isSafeInteger(length) && offset >= 0 && length >= 0 && offset + length <= bytes.byteLength,
+    Number.isSafeInteger(offset) &&
+      Number.isSafeInteger(length) &&
+      offset >= 0 &&
+      length >= 0 &&
+      offset + length <= bytes.byteLength,
     "INVALID_CACT",
     `${label} points outside the ${bytes.byteLength}-byte archive (offset ${offset}, length ${length})`,
   );
@@ -181,16 +193,28 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
 
   const u32 = (index: number): number => view.getUint32(index * 4, true);
   const tag = u32(0);
-  invariant(tag === CACT_TAG, "INVALID_CACT", `Invalid .cact tag 0x${tag.toString(16)} (expected 0x${CACT_TAG.toString(16)})`);
+  invariant(
+    tag === CACT_TAG,
+    "INVALID_CACT",
+    `Invalid .cact tag 0x${tag.toString(16)} (expected 0x${CACT_TAG.toString(16)})`,
+  );
 
   const numberOfTensors = u32(1);
   const codebookLength = u32(2);
   invariant(numberOfTensors > 0, "INVALID_CACT", "The .cact archive has no tensors");
-  invariant(codebookLength >= 28, "UNSUPPORTED_CACT", `Needle 2 requires the CQ2/CQ3/CQ4 codebook (28 entries); archive has ${codebookLength}`);
+  invariant(
+    codebookLength >= 28,
+    "UNSUPPORTED_CACT",
+    `Needle 2 requires the CQ2/CQ3/CQ4 codebook (28 entries); archive has ${codebookLength}`,
+  );
 
   const numberOfOrders = u32(19);
   const numberOfSites = u32(24);
-  invariant(numberOfOrders <= 4 && numberOfSites <= 4, "UNSUPPORTED_CACT", "The current .cact format supports at most four engram orders and sites");
+  invariant(
+    numberOfOrders <= 4 && numberOfSites <= 4,
+    "UNSUPPORTED_CACT",
+    "The current .cact format supports at most four engram orders and sites",
+  );
 
   const orders = Array.from({ length: numberOfOrders }, (_, index) => u32(20 + index));
   const sites = Array.from({ length: numberOfSites }, (_, index) => u32(25 + index));
@@ -216,10 +240,28 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
     ropeTheta: view.getFloat32(29 * 4, true),
   };
 
-  invariant(geometry.modelDimension > 0 && geometry.vocabularySize > 0, "INVALID_CACT", "Model geometry contains a zero-sized vocabulary or hidden dimension");
-  invariant(geometry.numberOfHeads > 0 && geometry.numberOfKVHeads > 0 && geometry.numberOfHeads % geometry.numberOfKVHeads === 0, "UNSUPPORTED_CACT", "Attention heads must be a positive multiple of KV heads");
-  invariant(geometry.numberOfHeads * geometry.headDimension > 0, "INVALID_CACT", "Invalid attention dimensions");
-  invariant((geometry.hadamardDimension & (geometry.hadamardDimension - 1)) === 0, "UNSUPPORTED_CACT", "Hadamard dimension must be a power of two");
+  invariant(
+    geometry.modelDimension > 0 && geometry.vocabularySize > 0,
+    "INVALID_CACT",
+    "Model geometry contains a zero-sized vocabulary or hidden dimension",
+  );
+  invariant(
+    geometry.numberOfHeads > 0 &&
+      geometry.numberOfKVHeads > 0 &&
+      geometry.numberOfHeads % geometry.numberOfKVHeads === 0,
+    "UNSUPPORTED_CACT",
+    "Attention heads must be a positive multiple of KV heads",
+  );
+  invariant(
+    geometry.numberOfHeads * geometry.headDimension > 0,
+    "INVALID_CACT",
+    "Invalid attention dimensions",
+  );
+  invariant(
+    (geometry.hadamardDimension & (geometry.hadamardDimension - 1)) === 0,
+    "UNSUPPORTED_CACT",
+    "Hadamard dimension must be a power of two",
+  );
 
   const codebookOffset = CACT_HEADER_BYTES;
   assertRange(bytes, codebookOffset, codebookLength * 4, "CQ codebook");
@@ -240,11 +282,21 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
     const offset = directoryOffset + index * CACT_RECORD_BYTES;
     const dtype = view.getUint8(offset) as CactDType;
     const dimensions = view.getUint8(offset + 1);
-    invariant(dimensions <= 4, "UNSUPPORTED_CACT", `Tensor ${index} has ${dimensions} dimensions; the format supports four`);
-    const shape = Array.from({ length: dimensions }, (_, dimension) => view.getUint32(offset + 4 + dimension * 4, true));
+    invariant(
+      dimensions <= 4,
+      "UNSUPPORTED_CACT",
+      `Tensor ${index} has ${dimensions} dimensions; the format supports four`,
+    );
+    const shape = Array.from({ length: dimensions }, (_, dimension) =>
+      view.getUint32(offset + 4 + dimension * 4, true),
+    );
     const blobOffset = Number(view.getBigUint64(offset + 20, true));
     const byteLength = Number(view.getBigUint64(offset + 28, true));
-    invariant(Number.isSafeInteger(blobOffset) && Number.isSafeInteger(byteLength), "UNSUPPORTED_CACT", `Tensor ${index} offset does not fit safely in JavaScript`);
+    invariant(
+      Number.isSafeInteger(blobOffset) && Number.isSafeInteger(byteLength),
+      "UNSUPPORTED_CACT",
+      `Tensor ${index} offset does not fit safely in JavaScript`,
+    );
     assertRange(bytes, blobOffset, byteLength, `Tensor ${index}`);
     records.push({
       index,
@@ -260,7 +312,11 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
   const tensors: CactTensor[] = records.map((record): CactTensor => {
     const count = product(record.shape);
     if (record.dtype === CactDType.Float16) {
-      invariant(record.byteLength === count * 2, "INVALID_CACT", `FP16 tensor ${record.index} has an inconsistent byte length`);
+      invariant(
+        record.byteLength === count * 2,
+        "INVALID_CACT",
+        `FP16 tensor ${record.index} has an inconsistent byte length`,
+      );
       return {
         kind: "dense",
         shape: record.shape,
@@ -269,9 +325,14 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
       };
     }
     if (record.dtype === CactDType.Float32) {
-      invariant(record.byteLength === count * 4, "INVALID_CACT", `FP32 tensor ${record.index} has an inconsistent byte length`);
+      invariant(
+        record.byteLength === count * 4,
+        "INVALID_CACT",
+        `FP32 tensor ${record.index} has an inconsistent byte length`,
+      );
       const data = new Float32Array(count);
-      for (let index = 0; index < count; index++) data[index] = view.getFloat32(record.offset + index * 4, true);
+      for (let index = 0; index < count; index++)
+        data[index] = view.getFloat32(record.offset + index * 4, true);
       return { kind: "dense", shape: record.shape, data, record };
     }
     if (record.dtype === CactDType.Raw) {
@@ -283,18 +344,38 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
       };
     }
     if (record.dtype === CactDType.CactusQuant) {
-      invariant(record.shape.length === 2, "INVALID_CACT", `CQ tensor ${record.index} is not a matrix`);
-      invariant(record.groupSize > 0 && (record.groupSize & (record.groupSize - 1)) === 0, "UNSUPPORTED_CACT", `CQ tensor ${record.index} has non-power-of-two group ${record.groupSize}`);
-      invariant(record.bits === 2 || record.bits === 3 || record.bits === 4 || record.bits === 5, "UNSUPPORTED_CACT", `CQ tensor ${record.index} uses unsupported record width ${record.bits}`);
+      invariant(
+        record.shape.length === 2,
+        "INVALID_CACT",
+        `CQ tensor ${record.index} is not a matrix`,
+      );
+      invariant(
+        record.groupSize > 0 && (record.groupSize & (record.groupSize - 1)) === 0,
+        "UNSUPPORTED_CACT",
+        `CQ tensor ${record.index} has non-power-of-two group ${record.groupSize}`,
+      );
+      invariant(
+        record.bits === 2 || record.bits === 3 || record.bits === 4 || record.bits === 5,
+        "UNSUPPORTED_CACT",
+        `CQ tensor ${record.index} uses unsupported record width ${record.bits}`,
+      );
       const outputSize = record.shape[0] ?? 0;
       const inputSize = record.shape[1] ?? 0;
       const inputSizePadded = Math.ceil(inputSize / record.groupSize) * record.groupSize;
       const packedBits = record.bits === 5 ? 2 : record.bits;
       const rowByteLength = (inputSizePadded * packedBits) / 8;
-      invariant(Number.isInteger(rowByteLength), "INVALID_CACT", `CQ tensor ${record.index} has a fractional packed row size`);
+      invariant(
+        Number.isInteger(rowByteLength),
+        "INVALID_CACT",
+        `CQ tensor ${record.index} has a fractional packed row size`,
+      );
       const packedByteLength = outputSize * rowByteLength;
       const normCount = outputSize * (inputSizePadded / record.groupSize);
-      invariant(record.byteLength === packedByteLength + normCount * 2, "INVALID_CACT", `CQ tensor ${record.index} has an inconsistent packed/norm length`);
+      invariant(
+        record.byteLength === packedByteLength + normCount * 2,
+        "INVALID_CACT",
+        `CQ tensor ${record.index} has an inconsistent packed/norm length`,
+      );
       const packed = bytes.subarray(record.offset, record.offset + packedByteLength);
       const normOffset = record.offset + packedByteLength;
       const norms = new DataView(bytes.buffer, bytes.byteOffset + normOffset, normCount * 2);
@@ -313,7 +394,10 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
         record,
       };
     }
-    throw new NeedleError("UNSUPPORTED_CACT", `Tensor ${record.index} uses unknown dtype ${dtypeName(record.dtype)}`);
+    throw new NeedleError(
+      "UNSUPPORTED_CACT",
+      `Tensor ${record.index} uses unknown dtype ${dtypeName(record.dtype)}`,
+    );
   });
 
   let cursor = 0;
@@ -324,7 +408,12 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
   };
 
   const embedding = cq(take("embedding"), "embedding");
-  invariant(embedding.outputSize === geometry.vocabularySize && embedding.inputSize === geometry.modelDimension, "INVALID_CACT", "Embedding shape does not match model geometry");
+  invariant(
+    embedding.outputSize === geometry.vocabularySize &&
+      embedding.inputSize === geometry.modelDimension,
+    "INVALID_CACT",
+    "Embedding shape does not match model geometry",
+  );
 
   const layers: CactLayer[] = [];
   for (let layer = 0; layer < geometry.numberOfLayers; layer++) {
@@ -337,9 +426,15 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
     const keyNorm = dense(take(`${prefix} key norm`), `${prefix} key norm`);
     const gateProjection = cq(take(`${prefix} gate projection`), `${prefix} gate projection`);
     const outputProjection = cq(take(`${prefix} output projection`), `${prefix} output projection`);
-    const postAttentionNorm = dense(take(`${prefix} post-attention norm`), `${prefix} post-attention norm`);
+    const postAttentionNorm = dense(
+      take(`${prefix} post-attention norm`),
+      `${prefix} post-attention norm`,
+    );
     const attentionGateTensor = dense(take(`${prefix} attention gate`), `${prefix} attention gate`);
-    const preHadamardNorm = dense(take(`${prefix} pre-Hadamard norm`), `${prefix} pre-Hadamard norm`);
+    const preHadamardNorm = dense(
+      take(`${prefix} pre-Hadamard norm`),
+      `${prefix} pre-Hadamard norm`,
+    );
     const hadamardD1 = dense(take(`${prefix} Hadamard d1`), `${prefix} Hadamard d1`);
     const hadamardD2 = dense(take(`${prefix} Hadamard d2`), `${prefix} Hadamard d2`);
     const hadamardD3 = dense(take(`${prefix} Hadamard d3`), `${prefix} Hadamard d3`);
@@ -376,7 +471,10 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
     engrams.push({
       tables: cq(take(`engram ${site} tables`), `engram ${site} tables`),
       keyProjection: cq(take(`engram ${site} key projection`), `engram ${site} key projection`),
-      valueProjection: cq(take(`engram ${site} value projection`), `engram ${site} value projection`),
+      valueProjection: cq(
+        take(`engram ${site} value projection`),
+        `engram ${site} value projection`,
+      ),
       taps: dense(take(`engram ${site} taps`), `engram ${site} taps`),
     });
   }
@@ -389,7 +487,8 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
     cursor++;
     for (const rawCode of manifest) {
       const code = Math.round(rawCode);
-      const name: ProbeHeadName | undefined = code === 1 ? "contrastive" : code === 2 ? "confidence" : undefined;
+      const name: ProbeHeadName | undefined =
+        code === 1 ? "contrastive" : code === 2 ? "confidence" : undefined;
       invariant(name !== undefined, "UNSUPPORTED_CACT", `Unknown probe-head manifest code ${code}`);
       const probesTensor = take(`${name} probes`);
       const projectionTensor = take(`${name} projection`);
@@ -399,8 +498,16 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
       const bias = dense(biasTensor, `${name} bias`);
       const probeCount = probesTensor.shape[0] ?? 0;
       const outputSize = projectionTensor.shape[0] ?? bias.length;
-      invariant(probeCount > 0 && probes.length === probeCount * geometry.modelDimension, "INVALID_CACT", `${name} probe shape is inconsistent`);
-      invariant(projection.length === outputSize * probeCount * geometry.modelDimension, "INVALID_CACT", `${name} projection shape is inconsistent`);
+      invariant(
+        probeCount > 0 && probes.length === probeCount * geometry.modelDimension,
+        "INVALID_CACT",
+        `${name} probe shape is inconsistent`,
+      );
+      invariant(
+        projection.length === outputSize * probeCount * geometry.modelDimension,
+        "INVALID_CACT",
+        `${name} projection shape is inconsistent`,
+      );
       heads.set(name, { name, probes, probeCount, projection, outputSize, bias });
     }
   }
@@ -409,13 +516,24 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
   while (cursor < tensors.length) {
     const tensor = take("trailing tensor");
     if (tensor.kind === "raw") {
-      invariant(tokenizerBlob === undefined, "INVALID_CACT", "Archive contains more than one RAW tokenizer tensor");
+      invariant(
+        tokenizerBlob === undefined,
+        "INVALID_CACT",
+        "Archive contains more than one RAW tokenizer tensor",
+      );
       tokenizerBlob = tensor.data;
     } else {
-      throw new NeedleError("UNSUPPORTED_CACT", `Unexpected trailing tensor ${tensor.record.index}`);
+      throw new NeedleError(
+        "UNSUPPORTED_CACT",
+        `Unexpected trailing tensor ${tensor.record.index}`,
+      );
     }
   }
-  invariant(tokenizerBlob !== undefined, "INVALID_CACT", "Archive does not contain its RAW SentencePiece tokenizer");
+  invariant(
+    tokenizerBlob !== undefined,
+    "INVALID_CACT",
+    "Archive does not contain its RAW SentencePiece tokenizer",
+  );
 
   return {
     bytes,
@@ -444,5 +562,7 @@ export function parseCact(source: ArrayBuffer | ArrayBufferView): CactWeights {
 }
 
 function dtypeName(dtype: number): string {
-  return ({ 1: "FP16", 2: "FP32", 3: "CQ", 4: "RAW" } as Record<number, string>)[dtype] ?? String(dtype);
+  return (
+    ({ 1: "FP16", 2: "FP32", 3: "CQ", 4: "RAW" } as Record<number, string>)[dtype] ?? String(dtype)
+  );
 }

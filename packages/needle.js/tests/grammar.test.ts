@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { JsonSchemaGrammar, ToolCallGrammar } from "../src/tools/grammar.js";
-import { normalizeTools, type JsonSchema } from "../src/tools/schema.js";
+import { type JsonSchema, normalizeTools } from "../src/tools/schema.js";
 
 const encode = (value: string) => new TextEncoder().encode(value);
 
@@ -23,7 +23,8 @@ const parameters: JsonSchema = {
 describe("JSON Schema grammar", () => {
   test("accepts nested, schema-conforming compact JSON", () => {
     const grammar = new JsonSchemaGrammar(parameters);
-    const text = '{"mode":"eco","level":3,"enabled":true,"tags":["a","b"],"location":{"lon":2.5,"lat":-1}}';
+    const text =
+      '{"mode":"eco","level":3,"enabled":true,"tags":["a","b"],"location":{"lon":2.5,"lat":-1}}';
     // Feed uneven chunks to exercise resumable strings/numbers/literals.
     for (let offset = 0; offset < text.length; offset += 7) {
       expect(grammar.feed(encode(text.slice(offset, offset + 7)))).toBe(true);
@@ -77,7 +78,8 @@ describe("tool-call grammar", () => {
 
   test("accepts multiple non-repeated tool calls", () => {
     const grammar = new ToolCallGrammar(tools, 2);
-    const output = '[{"name":"configure","arguments":{"enabled":false,"level":5,"mode":"boost","tags":["lab"]}},{"name":"ping","arguments":{}}]';
+    const output =
+      '[{"name":"configure","arguments":{"enabled":false,"level":5,"mode":"boost","tags":["lab"]}},{"name":"ping","arguments":{}}]';
     expect(grammar.feed(encode(output))).toBe(true);
     expect(grammar.complete).toBe(true);
     expect(grammar.calls).toEqual([

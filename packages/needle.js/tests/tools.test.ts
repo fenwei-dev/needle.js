@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { defineTool, normalizeTools, serializeTools } from "../src/tools/schema.js";
 import { rankToolsBM25, retrieveTools } from "../src/tools/retrieval.js";
+import { defineTool, normalizeTools, serializeTools } from "../src/tools/schema.js";
 
 describe("tool definitions", () => {
   test("normalizes raw and OpenAI function schemas", () => {
@@ -38,10 +38,14 @@ describe("tool definitions", () => {
 
   test("rejects duplicates and invalid required properties", () => {
     expect(() => normalizeTools([{ name: "x" }, { name: "x" }])).toThrow(/duplicate/i);
-    expect(() => normalizeTools([{
-      name: "x",
-      parameters: { type: "object", properties: {}, required: ["missing"] },
-    }])).toThrow(/unknown parameter/i);
+    expect(() =>
+      normalizeTools([
+        {
+          name: "x",
+          parameters: { type: "object", properties: {}, required: ["missing"] },
+        },
+      ]),
+    ).toThrow(/unknown parameter/i);
   });
 });
 

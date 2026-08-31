@@ -1,23 +1,15 @@
-import { NeedleError, invariant } from "../errors.js";
-import {
-  NeedleModel,
-  type LoadModelOptions,
-} from "../model/model.js";
+import { invariant, NeedleError } from "../errors.js";
 import { argmax, logSoftmaxAt } from "../model/math.js";
-import {
-  BOS_TOKEN_ID,
-  EOS_TOKEN_ID,
-  TokenPieceType,
-  CHAT_MARKERS,
-} from "../model/tokenizer.js";
-import { ToolCallGrammar, type GrammarToolCall } from "./grammar.js";
+import { type LoadModelOptions, NeedleModel } from "../model/model.js";
+import { BOS_TOKEN_ID, CHAT_MARKERS, EOS_TOKEN_ID, TokenPieceType } from "../model/tokenizer.js";
+import { type GrammarToolCall, ToolCallGrammar } from "./grammar.js";
 import { retrieveTools } from "./retrieval.js";
 import {
-  normalizeTools,
-  serializeTools,
   type JsonSchema,
   type JsonValue,
   type NeedleTool,
+  normalizeTools,
+  serializeTools,
   type ToolInput,
 } from "./schema.js";
 
@@ -90,7 +82,10 @@ export class Needle {
   #callCounter = 0;
   #disposed = false;
 
-  constructor(model: NeedleModel, options: Omit<NeedleOptions, "model" | "weights" | "backend" | "backendOptions"> = {}) {
+  constructor(
+    model: NeedleModel,
+    options: Omit<NeedleOptions, "model" | "weights" | "backend" | "backendOptions"> = {},
+  ) {
     this.model = model;
     this.tools = normalizeTools(options.tools ?? []);
     this.system = options.system ?? "";
@@ -98,13 +93,17 @@ export class Needle {
   }
 
   static async create(options: NeedleOptions = {}): Promise<Needle> {
-    const model = options.model ?? await NeedleModel.load(options);
+    const model = options.model ?? (await NeedleModel.load(options));
     return new Needle(model, options);
   }
 
   async complete(text: string, options: CompleteOptions = {}): Promise<NeedleResponse> {
     invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "Needle agent has been disposed");
-    invariant(this.tools.length > 0, "INVALID_TOOL_SCHEMA", "Needle tool calling requires at least one tool");
+    invariant(
+      this.tools.length > 0,
+      "INVALID_TOOL_SCHEMA",
+      "Needle tool calling requires at least one tool",
+    );
     const selected = this.#selectTools(text);
     const prompt = this.#renderPrompt(text, selected);
     const tokenizer = this.model.tokenizer;
@@ -115,14 +114,14 @@ export class Needle {
       promptIds.length + maximumNewTokens,
     );
     if (promptIds.length >= maximumLength) {
-      throw new NeedleError("CONTEXT_OVERFLOW", `Conversation has ${promptIds.length} tokens and leaves no decode room in the ${this.model.weights.geometry.maximumSequenceLength}-token context`);
+      throw new NeedleError(
+        "CONTEXT_OVERFLOW",
+        `Conversation has ${promptIds.length} tokens and leaves no decode room in the ${this.model.weights.geometry.maximumSequenceLength}-token context`,
+      );
     }
 
     const runtime = this.model.createRuntime({ collectConfidence: true });
-    const sinkLength = Math.min(
-      this.options.prefixSinkTokens ?? 160,
-      promptIds.length,
-    );
+    const sinkLength = Math.min(this.options.prefixSinkTokens ?? 160, promptIds.length);
     runtime.reset({ maximumLength, sinkLength });
     const prefillStarted = performance.now();
     let logits = await runtime.prefill(promptIds, options.signal);
@@ -140,7 +139,10 @@ export class Needle {
     let openedCall = false;
 
     for (let index = 0; index < reasoningLimit && runtime.position < maximumLength; index++) {
-      if (options.signal?.aborted) throw new NeedleError("GENERATION_ABORTED", "Needle completion was aborted", { cause: options.signal.reason });
+      if (options.signal?.aborted)
+        throw new NeedleError("GENERATION_ABORTED", "Needle completion was aborted", {
+          cause: options.signal.reason,
+        });
       const token = argmax(logits);
       if (token === toolCallStartId) {
         const next = await runtime.step(token, { signal: options.signal });
@@ -184,7 +186,10 @@ export class Needle {
           }
         }
         if (bestToken < 0 || !bestGrammar || !bestBytes) {
-          throw new NeedleError("GRAMMAR_DEAD_END", "No token can continue the schema-constrained tool call");
+          throw new NeedleError(
+            "GRAMMAR_DEAD_END",
+            "No token can continue the schema-constrained tool call",
+          );
         }
         chunks.push(bestBytes);
         outputBytes += bestBytes.byteLength;
@@ -193,7 +198,8 @@ export class Needle {
         grammar = bestGrammar;
         if (grammar.complete) {
           grammarCalls = grammar.calls;
-          if (runtime.position < maximumLength) await runtime.step(bestToken, { wantLogits: false, signal: options.signal });
+          if (runtime.position < maximumLength)
+            await runtime.step(bestToken, { wantLogits: false, signal: options.signal });
           break;
         }
         const next = await runtime.step(bestToken, { signal: options.signal });
@@ -213,7 +219,10 @@ export class Needle {
           const parsed = JSON.parse(rawCall) as GrammarToolCall[];
           if (Array.isArray(parsed)) grammarCalls = parsed;
         } catch {
-          throw new NeedleError("GRAMMAR_DEAD_END", `Constrained output did not finish as JSON: ${rawCall}`);
+          throw new NeedleError(
+            "GRAMMAR_DEAD_END",
+            `Constrained output did not finish as JSON: ${rawCall}`,
+          );
         }
       }
     }
@@ -229,11 +238,12 @@ export class Needle {
     const decodeConfidence = callLogProbabilities.length
       ? Math.exp(Math.min(...callLogProbabilities))
       : undefined;
-    const confidence = headConfidence === undefined
-      ? decodeConfidence ?? null
-      : decodeConfidence === undefined
-        ? headConfidence
-        : Math.min(headConfidence, decodeConfidence);
+    const confidence =
+      headConfidence === undefined
+        ? (decodeConfidence ?? null)
+        : decodeConfidence === undefined
+          ? headConfidence
+          : Math.min(headConfidence, decodeConfidence);
     const decodeMs = performance.now() - decodeStarted;
     const decodeTokens = reasoningIds.length + callIds.length;
     const metrics: CompletionMetrics = {
@@ -270,9 +280,12 @@ export class Needle {
     const maximumSteps = Math.max(1, options.maxSteps ?? 8);
     for (let step = 0; step < maximumSteps; step++) {
       if (response.type !== "call" || response.functionCalls.length === 0) break;
-      if (options.confidenceThreshold !== undefined
-        && response.confidence !== null
-        && response.confidence < options.confidenceThreshold) break;
+      if (
+        options.confidenceThreshold !== undefined &&
+        response.confidence !== null &&
+        response.confidence < options.confidenceThreshold
+      )
+        break;
       const turnResults: unknown[] = [];
       for (const call of response.functionCalls) {
         const implementation = this.tools.find((tool) => tool.name === call.name)?.execute;
@@ -339,7 +352,8 @@ export class Needle {
 
   #appendAssistant(reasoning: string, rawCall: string, called: boolean): void {
     this.#transcript += `${CHAT_MARKERS.imStart}assistant\n${reasoning}`;
-    if (called) this.#transcript += `${CHAT_MARKERS.toolCallStart}${rawCall}${CHAT_MARKERS.toolCallEnd}`;
+    if (called)
+      this.#transcript += `${CHAT_MARKERS.toolCallStart}${rawCall}${CHAT_MARKERS.toolCallEnd}`;
     this.#transcript += `${CHAT_MARKERS.imEnd}\n`;
   }
 }
@@ -355,14 +369,16 @@ function cleanReasoning(raw: string): string {
 
 function safeStringify(value: unknown): string {
   const seen = new WeakSet<object>();
-  return JSON.stringify(value, (_key, current: unknown) => {
-    if (typeof current === "bigint") return current.toString();
-    if (current && typeof current === "object") {
-      if (seen.has(current)) return "[Circular]";
-      seen.add(current);
-    }
-    return current;
-  }) ?? "null";
+  return (
+    JSON.stringify(value, (_key, current: unknown) => {
+      if (typeof current === "bigint") return current.toString();
+      if (current && typeof current === "object") {
+        if (seen.has(current)) return "[Circular]";
+        seen.add(current);
+      }
+      return current;
+    }) ?? "null"
+  );
 }
 
 export async function createNeedle(options: NeedleOptions = {}): Promise<Needle> {
@@ -380,11 +396,13 @@ export async function extract<Result extends object = Record<string, JsonValue>>
   };
   const agent = await Needle.create({
     ...options,
-    tools: [{
-      name: schema.title ?? "extract",
-      description: schema.description ?? "Extract the structured record from the supplied text",
-      parameters,
-    }],
+    tools: [
+      {
+        name: schema.title ?? "extract",
+        description: schema.description ?? "Extract the structured record from the supplied text",
+        parameters,
+      },
+    ],
   });
   try {
     const response = await agent.complete(text, options);

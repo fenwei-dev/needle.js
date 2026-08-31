@@ -6,7 +6,11 @@ const TERNARY_RECORD_BITS = 5;
 const TERNARY_CENTROID = 1.2240064;
 
 export function fastWalshHadamard(values: Float32Array, offset = 0, length = values.length): void {
-  invariant(length > 0 && (length & (length - 1)) === 0, "UNSUPPORTED_CACT", `Walsh-Hadamard length ${length} is not a power of two`);
+  invariant(
+    length > 0 && (length & (length - 1)) === 0,
+    "UNSUPPORTED_CACT",
+    `Walsh-Hadamard length ${length} is not a power of two`,
+  );
   for (let stride = 1; stride < length; stride <<= 1) {
     const block = stride << 1;
     for (let base = 0; base < length; base += block) {
@@ -24,7 +28,11 @@ export function fastWalshHadamard(values: Float32Array, offset = 0, length = val
 
 /** Applies normalized H independently to each quantization group. */
 export function prepareCqActivation(matrix: CqMatrix, input: Float32Array): Float32Array {
-  invariant(input.length === matrix.inputSize, "INVALID_CACT", `Matrix expects ${matrix.inputSize} inputs, received ${input.length}`);
+  invariant(
+    input.length === matrix.inputSize,
+    "INVALID_CACT",
+    `Matrix expects ${matrix.inputSize} inputs, received ${input.length}`,
+  );
   const prepared = new Float32Array(matrix.inputSizePadded);
   prepared.set(input);
   const inverseRoot = 1 / Math.sqrt(matrix.groupSize);
@@ -50,7 +58,11 @@ function luts(matrix: CqMatrix): CqLuts {
   if (cached) return cached;
   const codebook2 = matrix.codebooks.get(2);
   const codebook4 = matrix.codebooks.get(4);
-  invariant(codebook2?.length === 4 && codebook4?.length === 16, "INVALID_CACT", "CQ2/CQ4 codebooks are missing");
+  invariant(
+    codebook2?.length === 4 && codebook4?.length === 16,
+    "INVALID_CACT",
+    "CQ2/CQ4 codebooks are missing",
+  );
   const lut2 = new Float32Array(256 * 4);
   const lut4 = new Float32Array(256 * 2);
   for (let byte = 0; byte < 256; byte++) {
@@ -76,8 +88,20 @@ export function cqMatvecPrepared(
   rowStart = 0,
   rowCount = matrix.outputSize - rowStart,
 ): Float32Array {
-  invariant(prepared.length === matrix.inputSizePadded, "INVALID_CACT", "Prepared activation has the wrong padded length");
-  invariant(Number.isInteger(rowStart) && Number.isInteger(rowCount) && rowStart >= 0 && rowCount >= 0 && rowStart + rowCount <= matrix.outputSize, "INVALID_CACT", `Invalid matrix row range ${rowStart}:${rowStart + rowCount}`);
+  invariant(
+    prepared.length === matrix.inputSizePadded,
+    "INVALID_CACT",
+    "Prepared activation has the wrong padded length",
+  );
+  invariant(
+    Number.isInteger(rowStart) &&
+      Number.isInteger(rowCount) &&
+      rowStart >= 0 &&
+      rowCount >= 0 &&
+      rowStart + rowCount <= matrix.outputSize,
+    "INVALID_CACT",
+    `Invalid matrix row range ${rowStart}:${rowStart + rowCount}`,
+  );
   const output = new Float32Array(rowCount);
   const groupSize = matrix.groupSize;
   const groupsPerRow = matrix.inputSizePadded / groupSize;
@@ -96,10 +120,11 @@ export function cqMatvecPrepared(
         for (let column = 0; column < groupSize; column += 4) {
           const byte = packed[packedOffset + (column >>> 2)] ?? 0;
           const lookup = byte * 4;
-          dot += (lut2[lookup] ?? 0) * (prepared[inputOffset + column] ?? 0)
-            + (lut2[lookup + 1] ?? 0) * (prepared[inputOffset + column + 1] ?? 0)
-            + (lut2[lookup + 2] ?? 0) * (prepared[inputOffset + column + 2] ?? 0)
-            + (lut2[lookup + 3] ?? 0) * (prepared[inputOffset + column + 3] ?? 0);
+          dot +=
+            (lut2[lookup] ?? 0) * (prepared[inputOffset + column] ?? 0) +
+            (lut2[lookup + 1] ?? 0) * (prepared[inputOffset + column + 1] ?? 0) +
+            (lut2[lookup + 2] ?? 0) * (prepared[inputOffset + column + 2] ?? 0) +
+            (lut2[lookup + 3] ?? 0) * (prepared[inputOffset + column + 3] ?? 0);
         }
         total += normAt(matrix, row, group, groupsPerRow) * dot;
       }
@@ -121,8 +146,9 @@ export function cqMatvecPrepared(
         for (let column = 0; column < groupSize; column += 2) {
           const byte = packed[packedOffset + (column >>> 1)] ?? 0;
           const lookup = byte * 2;
-          dot += (lut4[lookup] ?? 0) * (prepared[inputOffset + column] ?? 0)
-            + (lut4[lookup + 1] ?? 0) * (prepared[inputOffset + column + 1] ?? 0);
+          dot +=
+            (lut4[lookup] ?? 0) * (prepared[inputOffset + column] ?? 0) +
+            (lut4[lookup + 1] ?? 0) * (prepared[inputOffset + column + 1] ?? 0);
         }
         total += normAt(matrix, row, group, groupsPerRow) * dot;
       }
@@ -144,10 +170,11 @@ export function cqMatvecPrepared(
         let dot = 0;
         for (let column = 0; column < groupSize; column += 4) {
           const byte = packed[packedOffset + (column >>> 2)] ?? 0;
-          dot += (crumbs[byte & 3] ?? 0) * (prepared[inputOffset + column] ?? 0)
-            + (crumbs[(byte >>> 2) & 3] ?? 0) * (prepared[inputOffset + column + 1] ?? 0)
-            + (crumbs[(byte >>> 4) & 3] ?? 0) * (prepared[inputOffset + column + 2] ?? 0)
-            + (crumbs[(byte >>> 6) & 3] ?? 0) * (prepared[inputOffset + column + 3] ?? 0);
+          dot +=
+            (crumbs[byte & 3] ?? 0) * (prepared[inputOffset + column] ?? 0) +
+            (crumbs[(byte >>> 2) & 3] ?? 0) * (prepared[inputOffset + column + 1] ?? 0) +
+            (crumbs[(byte >>> 4) & 3] ?? 0) * (prepared[inputOffset + column + 2] ?? 0) +
+            (crumbs[(byte >>> 6) & 3] ?? 0) * (prepared[inputOffset + column + 3] ?? 0);
         }
         total += normAt(matrix, row, group, groupsPerRow) * dot;
       }
@@ -191,17 +218,26 @@ export function cqMatvec(
 }
 
 /** Dequantizes one matrix row, primarily for embedding and engram gathers. */
-export function dequantizeCqRow(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {
+export function dequantizeCqRow(
+  matrix: CqMatrix,
+  row: number,
+  output?: Float32Array,
+): Float32Array {
   const result = output ?? new Float32Array(matrix.inputSize);
-  invariant(Number.isInteger(row) && row >= 0 && row < matrix.outputSize, "INVALID_CACT", `Matrix row ${row} is out of range`);
+  invariant(
+    Number.isInteger(row) && row >= 0 && row < matrix.outputSize,
+    "INVALID_CACT",
+    `Matrix row ${row} is out of range`,
+  );
   invariant(result.length >= matrix.inputSize, "INVALID_CACT", "Row output buffer is too short");
   const groupsPerRow = matrix.inputSizePadded / matrix.groupSize;
   const temporary = new Float32Array(matrix.groupSize);
   const inverseRoot = 1 / Math.sqrt(matrix.groupSize);
   const rowOffset = row * matrix.rowByteLength;
-  const codebook = matrix.bits === 5
-    ? new Float32Array([-TERNARY_CENTROID * inverseRoot, 0, TERNARY_CENTROID * inverseRoot])
-    : matrix.codebooks.get(matrix.bits);
+  const codebook =
+    matrix.bits === 5
+      ? new Float32Array([-TERNARY_CENTROID * inverseRoot, 0, TERNARY_CENTROID * inverseRoot])
+      : matrix.codebooks.get(matrix.bits);
   invariant(codebook !== undefined, "INVALID_CACT", `Codebook W${matrix.bits} is missing`);
 
   for (let group = 0; group < groupsPerRow; group++) {
@@ -220,7 +256,8 @@ export function dequantizeCqRow(matrix: CqMatrix, row: number, output?: Float32A
         const bitPosition = absoluteColumn * 3;
         const bytePosition = rowOffset + (bitPosition >>> 3);
         const shift = bitPosition & 7;
-        const word = (matrix.packed[bytePosition] ?? 0) | ((matrix.packed[bytePosition + 1] ?? 0) << 8);
+        const word =
+          (matrix.packed[bytePosition] ?? 0) | ((matrix.packed[bytePosition + 1] ?? 0) << 8);
         index = (word >>> shift) & 7;
       }
       temporary[column] = (codebook[index] ?? 0) * norm;
@@ -241,7 +278,11 @@ export function denseMatvec(
   input: Float32Array,
   bias?: Float32Array,
 ): Float32Array {
-  invariant(matrix.length === outputSize * input.length, "INVALID_CACT", "Dense matrix shape does not match the vector");
+  invariant(
+    matrix.length === outputSize * input.length,
+    "INVALID_CACT",
+    "Dense matrix shape does not match the vector",
+  );
   const result = new Float32Array(outputSize);
   for (let row = 0; row < outputSize; row++) {
     let sum = bias?.[row] ?? 0;

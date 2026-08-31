@@ -2,6 +2,8 @@
 
 A TypeScript inference library for **Needle 2**, Cactus Compute's 45M-parameter tool-calling model. It reads the official self-contained `.cact` file directly and runs in Node.js, Bun, and modern browsers.
 
+> **Unofficial implementation:** needle.js is an independent project and is not affiliated with or endorsed by Cactus Compute.
+
 The package provides three interchangeable implementations:
 
 | Entry point | Backend | Extra requirement |
@@ -29,7 +31,7 @@ All three use the same tokenizer, incremental decoder, conversation API, and con
 - Agentic tool execution loop, multi-call turns, follow-up tool results, extraction, BM25 tool retrieval, and the exported confidence head
 - In-memory weights, generated embedded weights, local files, HTTP download, SHA-256 verification, Node disk cache, and browser Cache Storage
 
-The implementation follows the architecture/export/decode code in the [official Needle repository](https://github.com/cactus-compute/needle) and the independently validated reference engine in [MimiModel](https://github.com/memovai/mimimodel).
+The independent TypeScript implementation was developed using the public architecture, deployment-format, tokenizer, quantization, and decoding specifications in the [official Needle repository](https://github.com/cactus-compute/needle). [MimiModel](https://github.com/memovai/mimimodel) was also consulted as a secondary validation reference. See [NOTICE](NOTICE) for attribution and revision details.
 
 ## Installation
 
@@ -235,7 +237,7 @@ Restore the lightweight placeholder with:
 bun run embed:model --clear
 ```
 
-This mechanism makes embedding explicit: applications that download or ship the `.cact` as a separate asset do not pay a 13.7 MB package/bundle cost.
+This mechanism makes embedding explicit: applications that download or ship the `.cact` as a separate asset do not pay a 13.7 MB package/bundle cost. Any redistributed embedded build must retain the model's [Apache-2.0 license](LICENSES/Apache-2.0.txt), this package's [NOTICE](NOTICE), and applicable model attribution.
 
 ## Structured extraction
 
@@ -336,9 +338,8 @@ The fixture checks the published 8,192-token/27-layer geometry and an exact cons
 
 ## Attribution and licenses
 
-- Library code: MIT; see [LICENSE](LICENSE).
-- Needle's model architecture, package, and `.cact` specification: Cactus Compute's respective licenses.
-- MimiModel reference engine: MIT.
-- Needle 2 weights are **not included in this repository**. The published weights are Apache-2.0 and retain their own license. Review that license before redistributing an embedded build.
+- All `needle.js` TypeScript source code is MIT licensed; see [LICENSE](LICENSE).
+- The consulted upstream Needle source and separately distributed model weights are Apache-2.0.
+- Needle 2 weights are **not included in this repository**. Redistributed embedded builds must retain the model's Apache-2.0 license and attribution.
 
 See [NOTICE](NOTICE) for source references and revision details.

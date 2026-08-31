@@ -1,35 +1,45 @@
-needle.js implements inference for the Needle 2 model and interoperates with
-the Cactus Compute .cact deployment format.
+needle.js CORE PACKAGE NOTICE
 
-Primary specifications consulted during implementation:
+Copyright and package license
+-----------------------------
 
-1. Cactus Compute, "Needle 2"
-   https://github.com/cactus-compute/needle
-   Revision inspected: ee221ce7c13579d9809209b979a9b7a50936614c
-   In particular: needle/model/architecture.py, decode.py, export.py,
-   quantize.py, tokenizer.py, and needle/model/finetune.py.
-   The upstream source repository is MIT licensed.
+needle.js source code is licensed under the MIT License. See LICENSE.
 
-2. memovai, "MimiModel"
-   https://github.com/memovai/mimimodel
-   Revision inspected: 994a92581daac25bc6dd857bc2422d93e5c8b88b
-   In particular: needle_np.py and needle.c, which document a separately
-   validated NumPy/C implementation of the same archive and architecture.
-   MimiModel is MIT licensed.
+needle.js is an independent implementation and is not affiliated with or
+endorsed by Cactus Compute.
 
-3. Cactus Compute Needle 2 model archive
-   https://huggingface.co/Cactus-Compute/needle2
-   Repository revision pinned by this library:
-   98fbd955b0347e78059be0c253cc1ffa09b87bc7
-   needle2.cact SHA-256:
-   b43aabfcaf1a6db6acf488076eab71d823c08697c7af4521fc1d174b60ede5ba
-   Published model weights are Apache-2.0 licensed and are not included in
-   this source repository.
+Cactus Compute Needle 2
+------------------------
+
+The following upstream project and public model specification were consulted
+for interoperability, architecture details, model geometry, tokenizer
+behavior, quantization layout, and the .cact deployment format:
+
+  Cactus Compute Needle 2
+  https://github.com/cactus-compute/needle
+  Revision inspected: ee221ce7c13579d9809209b979a9b7a50936614c
+
+The upstream Needle source is licensed under the Apache License, Version 2.0.
+A copy is retained at LICENSES/Apache-2.0.txt for reference and for
+redistributions that include the separately licensed model weights.
+
+The separately distributed Needle 2 model archive is published at:
+
+  https://huggingface.co/Cactus-Compute/needle2
+  Repository revision pinned by needle.js:
+  98fbd955b0347e78059be0c253cc1ffa09b87bc7
+  needle2.cact SHA-256:
+  b43aabfcaf1a6db6acf488076eab71d823c08697c7af4521fc1d174b60ede5ba
+
+The model weights are Apache-2.0 licensed and are not included in the source
+repository. Embedded or redistributed model builds must retain the model's
+Apache-2.0 license and applicable attribution.
+
+Other dependencies
+------------------
 
 TypeGPU is Copyright Software Mansion and contributors, MIT licensed.
 vgpu is Copyright its contributors, MIT licensed.
-@webgpu/types is maintained by the GPU for the Web community group and is
-BSD-3-Clause licensed.
-
-No upstream source file is vendored in this package. Names and links above are
-provided for attribution, format provenance, and reproducibility.
+@webgpu/types is maintained by the GPU for the Web Community Group and is
+BSD-3-Clause licensed. Dependencies distributed as separate npm packages
+retain their own license files and notices.

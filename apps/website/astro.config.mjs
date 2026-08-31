@@ -62,6 +62,7 @@ export default defineConfig({
           items: [
             { label: "Tool calling", slug: "reference/tool-calling" },
             { label: "Inference backends", slug: "reference/backends" },
+            { label: "Licenses and attribution", slug: "reference/licenses" },
           ],
         },
       ],

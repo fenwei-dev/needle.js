@@ -9,7 +9,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "LICENSES"
   ],
   "main": "./dist/index.js",
   "module": "./dist/index.js",

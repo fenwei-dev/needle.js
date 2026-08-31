@@ -1,0 +1,68 @@
+---
+title: Needle 2, in TypeScript
+description: Run a 45M-parameter tool-calling model locally with CPU and WebGPU backends.
+template: splash
+hero:
+  title: Local tool calling, down to the last bit
+  tagline: A 13.7 MB Needle 2 runtime for TypeScript, with direct, Vercel AI SDK, and pi integrations.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Get started
+      link: /getting-started/needle-js/
+      icon: right-arrow
+    - text: Run the browser demo
+      link: /demo/
+      icon: rocket
+    - text: View on GitHub
+      link: https://github.com/fenwei-dev/needle.js
+      icon: external
+      variant: minimal
+---
+
+import { Badge, Card, CardGrid } from '@astrojs/starlight/components';
+
+<div class="not-content my-8 flex flex-wrap justify-center gap-2">
+  <Badge text="45M parameters" variant="note" />
+  <Badge text="13.7 MB CQ weights" variant="tip" />
+  <Badge text="No API key" variant="success" />
+  <Badge text="CPU + WebGPU" variant="caution" />
+</div>
+
+## One model, three interfaces
+
+<CardGrid stagger>
+  <Card title="needle.js" icon="document">
+    Load the official `.cact` archive, define JSON Schema tools, and run the
+    complete execution loop without a framework.
+
+    [Start with the core library →](/getting-started/needle-js/)
+  </Card>
+  <Card title="Vercel AI SDK" icon="puzzle">
+    Use a standard `LanguageModelV4` with `generateText()`, `streamText()`, AI
+    SDK tools, and structured output.
+
+    [Use the AI SDK provider →](/integrations/ai-sdk/)
+  </Card>
+  <Card title="pi-ai + Agent" icon="terminal">
+    Register a native, zero-cost pi-ai provider or install it directly into pi
+    as a local model extension.
+
+    [Build a pi agent →](/integrations/pi-ai/)
+  </Card>
+</CardGrid>
+
+## Why Needle?
+
+Needle 2 is purpose-built for selecting tools and extracting their arguments. The model combines grouped-query attention, four-lane hyper-connections, a fixed Hadamard MLP, and hashed n-gram memory. Cactus Quants keeps 45 million parameters in a compact archive that can be read without expanding every matrix.
+
+`needle.js` implements that stack in TypeScript and keeps the deployment contract simple:
+
+1. Load embedded, local, or cached weights.
+2. Describe a small set of tools with JSON Schema.
+3. Let a continuous byte grammar make malformed calls unreachable.
+4. Execute above your chosen confidence threshold.
+
+:::note[Designed for actions]
+Needle is not a tiny general-purpose chat model. Its best output is a validated tool call. The high-level APIs preserve that design instead of pretending otherwise.
+:::

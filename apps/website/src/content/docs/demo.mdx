@@ -1,0 +1,30 @@
+---
+title: Browser demo
+description: Run Needle 2 locally through needle.js, the Vercel AI SDK, or a pi Agent.
+full: true
+pagefind: false
+---
+
+import NeedleDemo from '../../components/NeedleDemo.tsx';
+
+<div class="not-content mx-auto mb-8 max-w-4xl text-center">
+  <p class="text-sm font-bold tracking-[0.24em] text-purple-400 uppercase">No server inference</p>
+  <h1 class="mt-3 text-4xl font-black tracking-tight text-balance sm:text-5xl">
+    Three APIs. The same local model.
+  </h1>
+  <p class="mx-auto mt-4 max-w-2xl text-lg leading-relaxed text-slate-400">
+    Load Needle 2 once, then compare the direct library, Vercel AI SDK, and pi Agent execution loops in your browser.
+  </p>
+</div>
+
+<NeedleDemo client:only="preact" />
+
+:::caution[Expect a deliberate first run]
+The first click downloads 13.7 MB and pure TypeScript prefill may take a few seconds, especially on mobile. Later examples reuse the same in-memory model and browser cache.
+:::
+
+## What stays local?
+
+The model archive is fetched from the pinned Hugging Face revision. Your prompt, generated reasoning, tool arguments, and tool results stay in the page. The sample tool only returns `{ "flashlight": "on" }` and does not access device hardware.
+
+For the most reliable first result, keep the default **“Turn on the flashlight.”** prompt. Needle is a compact action model; unrelated conversational prompts may correctly decline with `[]`.

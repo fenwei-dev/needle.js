@@ -7,7 +7,7 @@ TypeScript tooling for running [Needle 2](https://github.com/cactus-compute/need
 - [`packages/needle.js`](packages/needle.js) — Needle 2 inference, constrained tool calling, and CPU/TypeGPU/vgpu backends.
 - [`packages/needle-ai-provider`](packages/needle-ai-provider) — Vercel AI SDK v7 provider for local Needle inference.
 - [`packages/needle-pi-ai-provider`](packages/needle-pi-ai-provider) — native pi-ai provider and installable pi extension.
-- `apps/website` — Starlight documentation and browser demos (planned).
+- [`apps/website`](apps/website) — Astro Starlight documentation and three local browser demos.
 
 ## Development
 
@@ -19,3 +19,9 @@ bun run build
 ```
 
 Commands run across all workspaces that expose the corresponding script.
+
+Start the documentation site with:
+
+```bash
+bun run --cwd apps/website dev
+```

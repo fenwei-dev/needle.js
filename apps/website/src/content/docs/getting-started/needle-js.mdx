@@ -1,0 +1,167 @@
+---
+title: Get started with needle.js
+description: Load Needle 2, define typed tools, and run a local agent loop.
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`needle.js` reads the official Needle 2 `.cact` archive directly. The default CPU implementation has no native addon or WASM dependency; TypeGPU and vgpu backends are optional.
+
+## Install
+
+<Tabs syncKey="package-manager">
+  <TabItem label="Bun">
+    ```bash
+    bun add needle.js
+    ```
+  </TabItem>
+  <TabItem label="npm">
+    ```bash
+    npm install needle.js
+    ```
+  </TabItem>
+</Tabs>
+
+## Your first tool
+
+<Steps>
+1. Define the schema and implementation.
+
+   ```ts
+   import { createNeedle, defineTool } from "needle.js";
+
+   const getWeather = defineTool<
+     { city: string; units?: "celsius" | "fahrenheit" },
+     { city: string; temperature: number; units: string }
+   >({
+     name: "get_weather",
+     description: "Get the current weather for a city",
+     parameters: {
+       type: "object",
+       properties: {
+         city: { type: "string", description: "City name" },
+         units: {
+           type: "string",
+           enum: ["celsius", "fahrenheit"],
+         },
+       },
+       required: ["city"],
+     },
+     execute: async ({ city, units = "celsius" }) => ({
+       city,
+       temperature: 27,
+       units,
+     }),
+   });
+   ```
+
+2. Load the model and create an agent.
+
+   ```ts
+   const agent = await createNeedle({
+     weights: "download",
+     backend: "cpu",
+     tools: [getWeather],
+     system: "date: 2026-08-31; locale: en-US",
+     onProgress: ({ loaded, total }) => {
+       console.log(`model ${loaded}/${total ?? "?"}`);
+     },
+   });
+   ```
+
+3. Run the execution loop.
+
+   ```ts
+   const response = await agent.run("What's the weather in Lagos?");
+
+   console.log(response.functionCalls);
+   console.log(response.results);
+   console.log(response.confidence);
+
+   await agent.dispose();
+   ```
+</Steps>
+
+`complete()` performs one model turn and returns calls without executing them. `run()` finds each registered implementation, executes it, feeds the result back, and stops when Needle returns `type: "respond"`.
+
+## Response contract
+
+```ts
+interface NeedleResponse {
+  type: "call" | "respond";
+  functionCalls: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, JsonValue>;
+  }>;
+  reasoning: string;
+  confidence: number | null;
+  metrics: {
+    promptTokens: number;
+    reasoningTokens: number;
+    callTokens: number;
+    prefillTokensPerSecond: number;
+    decodeTokensPerSecond: number;
+  };
+  results?: unknown[];
+}
+```
+
+The `function_calls` property is an alias for interoperability with the official Python envelope.
+
+## Structured extraction
+
+Extraction is a one-tool call whose arguments are the record:
+
+```ts
+import { extract } from "needle.js";
+
+const invoice = await extract<{ vendor: string; total: number }>(
+  "Invoice from Acme Corp, total $1,200",
+  {
+    title: "invoice",
+    type: "object",
+    properties: {
+      vendor: { type: "string" },
+      total: { type: "number", minimum: 0 },
+    },
+    required: ["vendor", "total"],
+  },
+  { weights: "download" },
+);
+```
+
+## Confidence gating
+
+The base model contains a post-hoc confidence head. `needle.js` pools its probes online and combines that score with constrained-decoding probability.
+
+```ts
+const response = await agent.complete(command);
+
+if (response.confidence !== null && response.confidence >= 0.8) {
+  // Execute a side effect.
+} else {
+  // Ask for clarification or escalate to a larger model.
+}
+```
+
+<Aside type="caution" title="Fine-tuned weights">
+The base confidence calibration does not automatically remain valid after fine-tuning. Recalibrate before using scores from a tuned archive to authorize side effects.
+</Aside>
+
+## Raw generation
+
+You can access token generation directly, although Needle is trained for calls rather than chat:
+
+```ts
+import { NeedleModel } from "needle.js";
+
+const model = await NeedleModel.load({ weights: "download" });
+const result = await model.generate("The most surprising thing about", {
+  maxNewTokens: 64,
+  temperature: 0,
+  onToken: ({ piece }) => process.stdout.write(piece),
+});
+
+await model.dispose();
+```

@@ -1,0 +1,129 @@
+---
+title: pi-ai and pi agent
+description: Register Needle as a native pi-ai provider, run an Agent loop, or install it in pi.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`needle-pi-ai-provider` exposes a native pi-ai `Provider<"needle-local">`. It also ships a pi package extension.
+
+## Install
+
+<Tabs syncKey="package-manager">
+  <TabItem label="Bun">
+    ```bash
+    bun add @earendil-works/pi-ai @earendil-works/pi-agent-core needle-pi-ai-provider needle.js
+    ```
+  </TabItem>
+  <TabItem label="npm">
+    ```bash
+    npm install @earendil-works/pi-ai @earendil-works/pi-agent-core needle-pi-ai-provider needle.js
+    ```
+  </TabItem>
+</Tabs>
+
+## Register with pi-ai
+
+```ts
+import { createModels } from "@earendil-works/pi-ai";
+import { createNeedlePiProvider } from "needle-pi-ai-provider";
+
+const provider = createNeedlePiProvider({
+  weights: "download",
+  backend: "cpu",
+});
+const models = createModels();
+models.setProvider(provider);
+
+const model = models.getModel("needle", "needle-2")!;
+```
+
+The provider is keyless, local, zero-cost, and reports a 2,048-token context window.
+
+## Run a pi Agent
+
+```ts
+import { Agent } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+
+const agent = new Agent({
+  initialState: {
+    systemPrompt: "Use the available local tools.",
+    model,
+    thinkingLevel: "off",
+    tools: [
+      {
+        name: "get_weather",
+        label: "Get weather",
+        description: "Get current weather for a city",
+        parameters: Type.Object({ city: Type.String() }),
+        execute: async (_id, { city }) => ({
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ city, temperature: 27, sky: "clear" }),
+            },
+          ],
+          details: {},
+        }),
+      },
+    ],
+  },
+  streamFn: models.streamSimple.bind(models),
+});
+
+agent.subscribe((event) => {
+  if (
+    event.type === "message_update" &&
+    event.assistantMessageEvent.type === "text_delta"
+  ) {
+    process.stdout.write(event.assistantMessageEvent.delta);
+  }
+});
+
+await agent.prompt("What's the weather in Lagos?");
+await provider.dispose();
+```
+
+The Agent executes calls, appends pi-ai `toolResult` messages, and invokes Needle again until it returns `stop`.
+
+## Use the lower-level stream
+
+```ts
+const context = {
+  messages: [
+    { role: "user", content: "Turn on the flashlight", timestamp: Date.now() },
+  ],
+  tools,
+};
+
+const stream = models.streamSimple(model, context);
+
+for await (const event of stream) {
+  if (event.type === "toolcall_end") {
+    console.log(event.toolCall);
+  }
+}
+```
+
+The provider emits standard `start`, thinking/text/tool-call, and `done`/`error` events. Local failures never reject out of the stream.
+
+## Install directly in pi
+
+```bash
+pi install npm:needle-pi-ai-provider
+pi --provider needle --model needle-2
+```
+
+Optional environment settings:
+
+```bash
+export NEEDLE_MODEL_PATH=/path/to/needle2.cact
+export NEEDLE_BACKEND=cpu # cpu, typegpu, vgpu, or auto
+```
+
+The extension calls `pi.registerProvider()` with the complete native provider and disposes model resources on `session_shutdown`.
+
+<Aside type="caution" title="Use a small tool surface">
+Needle 2 is much smaller than coding-focused models normally used by pi. Keep only a few concrete tools active and use clear names, descriptions, enums, and bounds. It is ideal for device commands and structured local actions, not autonomous repository-wide coding.
+</Aside>

@@ -1,0 +1,144 @@
+---
+title: Vercel AI SDK provider
+description: Use local Needle 2 inference through generateText, streamText, tools, and structured output.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`needle-ai-provider` implements the AI SDK v7 `ProviderV4` and `LanguageModelV4` contracts.
+
+## Install
+
+<Tabs syncKey="package-manager">
+  <TabItem label="Bun">
+    ```bash
+    bun add ai needle-ai-provider needle.js
+    ```
+  </TabItem>
+  <TabItem label="npm">
+    ```bash
+    npm install ai needle-ai-provider needle.js
+    ```
+  </TabItem>
+</Tabs>
+
+## Create the provider
+
+```ts
+import { createNeedleProvider } from "needle-ai-provider";
+
+const needle = createNeedleProvider({
+  weights: "download",
+  backend: "cpu",
+});
+```
+
+The provider lazily loads one shared model. `needle()` and `needle("needle-2")` both return a language model.
+
+## Standard AI SDK tool loop
+
+```ts
+import {
+  generateText,
+  jsonSchema,
+  stepCountIs,
+  tool,
+} from "ai";
+
+const result = await generateText({
+  model: needle(),
+  prompt: "What's the weather in Lagos?",
+  stopWhen: stepCountIs(4),
+  tools: {
+    get_weather: tool({
+      description: "Get the current weather for a city",
+      inputSchema: jsonSchema<{ city: string }>({
+        type: "object",
+        properties: { city: { type: "string" } },
+        required: ["city"],
+      }),
+      execute: async ({ city }) => ({
+        city,
+        temperature: 27,
+        sky: "clear",
+      }),
+    }),
+  },
+});
+
+console.log(result.toolCalls);
+console.log(result.toolResults);
+console.log(result.text);
+
+await needle.dispose();
+```
+
+The first AI SDK step becomes a constrained Needle call. After execution, the provider reconstructs the prior local session, feeds the tool result back, and emits the result as final text when Needle ends the loop.
+
+## Structured output
+
+A JSON response schema is converted into a synthetic extraction tool. Its validated arguments flow through AI SDK structured output.
+
+```ts
+import { generateText, jsonSchema, Output } from "ai";
+
+const result = await generateText({
+  model: needle(),
+  prompt: "Acme invoice, total $1,200",
+  output: Output.object({
+    schema: jsonSchema<{ vendor: string; total: number }>({
+      type: "object",
+      properties: {
+        vendor: { type: "string" },
+        total: { type: "number" },
+      },
+      required: ["vendor", "total"],
+    }),
+  }),
+});
+
+console.log(result.output);
+```
+
+## Streaming
+
+```ts
+import { streamText } from "ai";
+
+const result = streamText({ model: needle(), prompt: "Hello" });
+
+for await (const chunk of result.textStream) {
+  process.stdout.write(chunk);
+}
+```
+
+<Aside type="note" title="Buffered local stream">
+Tool grammar completion currently happens before the provider emits AI SDK stream parts. The stream contract is valid, but chunks are buffered rather than arriving token by token. Use `NeedleModel.generate({ onToken })` for live raw-token display.
+</Aside>
+
+## Share a preloaded model
+
+```ts
+const provider = createNeedleProvider({
+  model,
+  disposeModel: false,
+});
+```
+
+A caller-owned model is retained by default. Set `disposeModel: true` when the provider should release it.
+
+## Per-call options
+
+```ts
+providerOptions: {
+  needle: {
+    reasoningTokens: 128,
+    prefixSinkTokens: 160,
+    maxCallsPerTurn: 4,
+    toolTokenBudget: 180,
+    maximumRetrievedTools: 5,
+  },
+}
+```
+
+Unsupported AI SDK settings are reported in the standard `warnings` array instead of being silently accepted.

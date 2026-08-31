@@ -1,0 +1,36 @@
+{
+  "name": "website",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "astro build",
+    "clean": "rm -rf dist .astro",
+    "dev": "astro dev",
+    "preview": "astro preview",
+    "test": "astro check",
+    "typecheck": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/preact": "^6.0.4",
+    "@astrojs/starlight": "^0.41.10",
+    "@astrojs/starlight-tailwind": "^5.0.0",
+    "@earendil-works/pi-agent-core": "^0.84.4",
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@tailwindcss/vite": "^4.3.3",
+    "ai": "^7.0.85",
+    "astro": "^7.2.9",
+    "needle-ai-provider": "workspace:*",
+    "needle-pi-ai-provider": "workspace:*",
+    "needle.js": "workspace:*",
+    "preact": "^10.28.2",
+    "sharp": "^0.35.3",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.6",
+    "@types/bun": "latest",
+    "@webgpu/types": "^0.1.72",
+    "typescript": "^5.9.3"
+  }
+}

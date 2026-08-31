@@ -1,6 +1,10 @@
 # needle.js monorepo
 
+[![Deploy website](https://github.com/fenwei-dev/needle.js/actions/workflows/deploy-website.yml/badge.svg)](https://github.com/fenwei-dev/needle.js/actions/workflows/deploy-website.yml)
+
 TypeScript tooling for running [Needle 2](https://github.com/cactus-compute/needle), integrating it with agent frameworks, and learning how its inference engine works.
+
+**Documentation:** <https://fenwei-dev.github.io/needle.js/>
 
 ## Workspaces
 

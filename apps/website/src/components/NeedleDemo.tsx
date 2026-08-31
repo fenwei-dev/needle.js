@@ -73,32 +73,31 @@ export default function NeedleDemo() {
   }
 
   return (
-    <section class="demo-shell not-content overflow-hidden rounded-2xl border border-purple-400/20 shadow-2xl shadow-purple-950/20">
-      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-purple-400/15 px-4 py-3">
-        <div class="flex gap-1 rounded-xl bg-black/20 p-1" role="tablist" aria-label="Demo API">
+    <section class="demo-shell not-content">
+      <header class="demo-toolbar">
+        <div class="demo-tabs" role="tablist" aria-label="Demo API">
           {(Object.keys(labels) as DemoMode[]).map((item) => (
             <button
               key={item}
               type="button"
               role="tab"
               aria-selected={mode === item}
-              class={`rounded-lg px-3 py-2 text-sm font-semibold transition ${
-                mode === item
-                  ? "bg-purple-500 text-white shadow"
-                  : "text-slate-300 hover:bg-white/5 hover:text-white"
-              }`}
+              class={`demo-tab${mode === item ? " is-active" : ""}`}
               onClick={() => setMode(item)}
             >
               {labels[item]}
             </button>
           ))}
         </div>
-        <span class="text-xs text-slate-400">{status}</span>
-      </div>
+        <span class="demo-status">
+          <span class={`demo-status-dot${modelRef.current ? " is-ready" : ""}`} />
+          {status}
+        </span>
+      </header>
 
-      <div class="grid gap-0 lg:grid-cols-[1.05fr_0.95fr]">
-        <div class="space-y-4 p-5">
-          <label class="block text-sm font-semibold text-slate-200" for="needle-demo-prompt">
+      <div class="demo-grid">
+        <div class="demo-input-panel">
+          <label class="demo-label" for="needle-demo-prompt">
             Prompt
           </label>
           <textarea
@@ -106,37 +105,33 @@ export default function NeedleDemo() {
             value={prompt}
             onInput={(event) => setPrompt(event.currentTarget.value)}
             rows={4}
-            class="w-full resize-y rounded-xl border border-purple-300/20 bg-black/25 p-3 font-mono text-sm text-slate-100 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20"
+            class="demo-textarea"
           />
           <button
             type="button"
             disabled={running || !prompt.trim()}
             onClick={run}
-            class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-amber-400 to-purple-500 px-5 py-2.5 font-bold text-slate-950 shadow-lg shadow-purple-950/20 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+            class="demo-run-button"
           >
             {running ? "Running locally…" : `Run with ${labels[mode]}`}
           </button>
-          <p class="text-xs leading-relaxed text-slate-400">
-            The first run downloads the official archive from Hugging Face. Inference stays in this
-            tab; prompts and tool data are not sent to a server.
+          <p class="demo-note">
+            The first run downloads the official 13.7 MB archive. Prompts, tool arguments, and
+            results remain in this browser tab.
           </p>
         </div>
 
-        <div class="border-t border-purple-400/15 bg-black/20 lg:border-t-0 lg:border-l">
-          <div class="border-b border-purple-400/15 px-4 py-2 text-xs font-bold tracking-widest text-purple-300 uppercase">
-            Example
-          </div>
-          <pre class="min-h-36 overflow-x-auto p-4 text-xs leading-relaxed text-slate-300">
+        <div class="demo-code-panel">
+          <div class="demo-panel-header">Example</div>
+          <pre class="demo-code">
             <code>{snippets[mode]}</code>
           </pre>
         </div>
       </div>
 
-      <div class="border-t border-purple-400/15">
-        <div class="px-4 py-2 text-xs font-bold tracking-widest text-amber-300 uppercase">
-          Output
-        </div>
-        <pre class="max-h-96 min-h-32 overflow-auto bg-[#0b0911]/70 p-4 text-xs leading-relaxed whitespace-pre-wrap text-emerald-200">
+      <div class="demo-output-panel">
+        <div class="demo-panel-header">Output</div>
+        <pre class="demo-output">
           <code>{output}</code>
         </pre>
       </div>

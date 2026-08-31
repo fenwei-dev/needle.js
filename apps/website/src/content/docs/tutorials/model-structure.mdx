@@ -214,5 +214,5 @@ logits = embedding · finalHidden
 Optional probe heads pool every token/layer cell with learned query vectors. `needle.js` evaluates confidence pooling online with a numerically stable streaming softmax, so it does not retain all hidden cells. The final action confidence is combined with constrained-token probability.
 
 <Aside type="note" title="Next">
-Now that the operators are familiar, inspect how they are serialized in the [`.cact` archive](/tutorials/cact-format/), then build a minimal [loader and tokenizer](/tutorials/engine-1-loader/).
+Now that the operators are familiar, inspect how they are serialized in the [`.cact` archive](/needle.js/tutorials/cact-format/), then build a minimal [loader and tokenizer](/needle.js/tutorials/engine-1-loader/).
 </Aside>

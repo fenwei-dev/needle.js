@@ -1,0 +1,52 @@
+{
+  "name": "needle-ai-provider",
+  "version": "0.1.0",
+  "description": "Vercel AI SDK provider for local Needle 2 inference",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "bun run clean && tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "test": "bun test tests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "^4.0.9"
+  },
+  "peerDependencies": {
+    "needle.js": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "ai": "^7.0.85",
+    "needle.js": "workspace:*",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "ai-sdk",
+    "vercel-ai-sdk",
+    "needle-2",
+    "tool-calling",
+    "local-ai"
+  ]
+}

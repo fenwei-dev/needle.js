@@ -5,7 +5,7 @@ TypeScript tooling for running [Needle 2](https://github.com/cactus-compute/need
 ## Workspaces
 
 - [`packages/needle.js`](packages/needle.js) — Needle 2 inference, constrained tool calling, and CPU/TypeGPU/vgpu backends.
-- `packages/needle-ai-provider` — Vercel AI SDK provider (planned).
+- [`packages/needle-ai-provider`](packages/needle-ai-provider) — Vercel AI SDK v7 provider for local Needle inference.
 - `packages/needle-pi-ai-provider` — pi-ai provider (planned).
 - `apps/website` — Starlight documentation and browser demos (planned).
 

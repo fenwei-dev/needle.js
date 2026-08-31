@@ -8,13 +8,15 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "bun run --filter '*' build",
+    "build": "bun run build:packages && bun run --cwd apps/website build",
+    "build:packages": "bun run --cwd packages/needle.js build && bun run --cwd packages/needle-ai-provider build && bun run --cwd packages/needle-pi-ai-provider build",
     "check": "biome check .",
     "clean": "bun run --filter '*' clean",
+    "dev": "bun run build:packages && bun run --cwd apps/website dev",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "test": "bun run --filter '*' test",
-    "typecheck": "bun run --filter '*' typecheck"
+    "test": "bun run build:packages && bun run --cwd packages/needle.js test && bun run --cwd packages/needle-ai-provider test && bun run --cwd packages/needle-pi-ai-provider test && bun run --cwd apps/website test",
+    "typecheck": "bun run build:packages && bun run --cwd packages/needle.js typecheck && bun run --cwd packages/needle-ai-provider typecheck && bun run --cwd packages/needle-pi-ai-provider typecheck && bun run --cwd apps/website typecheck"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.11"

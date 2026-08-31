@@ -1,0 +1,251 @@
+---
+title: "Inference engine, part 1: loader and tokenizer"
+description: Build safe binary readers, zero-copy tensor views, FP16 conversion, and the embedded SentencePiece tokenizer.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+We will build a small reference engine in three parts. Correctness comes first; optimization comes after we can compare token IDs and logits with a known implementation.
+
+By the end of part 1 you should have:
+
+```ts
+interface LoadedNeedle {
+  geometry: Geometry;
+  embedding: CqMatrix;
+  layers: Layer[];
+  // mHC, engrams, norms, heads…
+  tokenizer: Tokenizer;
+}
+```
+
+## 1. Normalize the input view
+
+Callers may pass an `ArrayBuffer`, Node `Buffer`, or a subarray with a nonzero byte offset. Preserve that offset:
+
+```ts
+function asBytes(source: ArrayBuffer | ArrayBufferView): Uint8Array {
+  if (source instanceof ArrayBuffer) return new Uint8Array(source);
+  return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+}
+
+const bytes = asBytes(source);
+const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+```
+
+Every archive offset is relative to `bytes`, not the underlying buffer.
+
+## 2. Make bounds checks boring
+
+Centralize range validation and call it before every read/view:
+
+```ts
+function assertRange(
+  bytes: Uint8Array,
+  offset: number,
+  length: number,
+  label: string,
+): void {
+  const valid =
+    Number.isSafeInteger(offset) &&
+    Number.isSafeInteger(length) &&
+    offset >= 0 &&
+    length >= 0 &&
+    offset + length <= bytes.byteLength;
+
+  if (!valid) {
+    throw new Error(`${label} lies outside the archive`);
+  }
+}
+```
+
+Also multiply tensor dimensions with safe-integer checks. Never allocate from untrusted shape products before validation.
+
+## 3. Decode FP16 control tensors
+
+JavaScript has no universally available mutable float16 array. Convert the small norms, gates, diagonals, and routing parameters to f32.
+
+```ts
+const scratchF32 = new Float32Array(1);
+const scratchU32 = new Uint32Array(scratchF32.buffer);
+
+function f16(bits16: number): number {
+  const sign = (bits16 & 0x8000) << 16;
+  let exponent = (bits16 >> 10) & 0x1f;
+  let mantissa = bits16 & 0x03ff;
+  let bits32: number;
+
+  if (exponent === 0) {
+    if (mantissa === 0) {
+      bits32 = sign;
+    } else {
+      exponent = 127 - 15 + 1;
+      while ((mantissa & 0x0400) === 0) {
+        mantissa <<= 1;
+        exponent--;
+      }
+      bits32 = sign | (exponent << 23) | ((mantissa & 0x03ff) << 13);
+    }
+  } else if (exponent === 0x1f) {
+    bits32 = sign | 0x7f80_0000 | (mantissa << 13);
+  } else {
+    bits32 = sign | ((exponent - 15 + 127) << 23) | (mantissa << 13);
+  }
+
+  scratchU32[0] = bits32 >>> 0;
+  return scratchF32[0]!;
+}
+```
+
+Test zero, negative zero, one, infinity, NaN, the smallest subnormal, and representative archive values.
+
+## 4. Retain packed matrices
+
+Do not decode a CQ matrix during parsing:
+
+```ts
+interface CqMatrix {
+  output: number;
+  input: number;
+  inputPadded: number;
+  group: number;
+  bits: 2 | 3 | 4 | 5;
+  rowBytes: number;
+  packed: Uint8Array;
+  norms: DataView;
+  codebooks: Map<number, Float32Array>;
+}
+```
+
+Create `packed` with `bytes.subarray()`. Create the norm `DataView` with `bytes.byteOffset + normOffset`; forgetting the parent offset is a classic bug when tests pass a sliced buffer.
+
+## 5. Assign positional tensors
+
+After generic record parsing, consume tensors in canonical order. A small cursor makes missing or wrongly typed records fail close to their semantic name:
+
+```ts
+let cursor = 0;
+
+function take(name: string): Tensor {
+  const tensor = tensors[cursor++];
+  if (!tensor) throw new Error(`Archive ended before ${name}`);
+  return tensor;
+}
+
+const embedding = expectCq(take("embedding"));
+const layers: Layer[] = [];
+
+for (let index = 0; index < geometry.layers; index++) {
+  layers.push({
+    normInput: expectDense(take(`layer ${index} input norm`)),
+    query: expectCq(take(`layer ${index} query projection`)),
+    key: expectCq(take(`layer ${index} key projection`)),
+    value: expectCq(take(`layer ${index} value projection`)),
+    // …eleven more records
+  });
+}
+```
+
+Check key shapes against geometry: the embedding must be `[vocabulary, hidden]`; Q output is `queryHeads × headDimension`; K/V output is `kvHeads × headDimension`.
+
+## 6. Parse tokenizer metadata
+
+Read the tokenizer header and every piece record into:
+
+```ts
+interface Tokenizer {
+  pieces: string[];
+  scores: Float32Array;
+  types: Uint8Array;
+  pieceToId: Map<string, number>;
+  byteToId: Int32Array;
+  markers: string[];
+}
+```
+
+Build `markers` from user-defined pieces and sort longest-first. Build byte fallback IDs by parsing surfaces such as `<0xE2>`.
+
+## 7. Encode with greedy SentencePiece BPE
+
+Needle's exported tokenizer is small enough for a clear reference algorithm:
+
+<Steps>
+1. Replace ASCII spaces with the SentencePiece meta-space `▁`.
+2. Add one leading `▁` when `addDummyPrefix` is true.
+3. Split around the longest user-defined chat marker at each position.
+4. Start each normal segment as Unicode code points.
+5. Repeatedly merge the adjacent pair whose combined piece exists and has the highest score. Keep the leftmost pair on ties.
+6. Map remaining symbols to IDs, falling back to their UTF-8 bytes.
+</Steps>
+
+```ts
+function bpe(segment: string): number[] {
+  const symbols = Array.from(segment);
+
+  while (symbols.length > 1) {
+    let bestScore = -Infinity;
+    let bestAt = -1;
+
+    for (let i = 0; i + 1 < symbols.length; i++) {
+      const merged = symbols[i]! + symbols[i + 1]!;
+      const id = pieceToId.get(merged);
+      if (id !== undefined && (bestAt < 0 || scores[id]! > bestScore)) {
+        bestScore = scores[id]!;
+        bestAt = i;
+      }
+    }
+
+    if (bestAt < 0) break;
+    symbols.splice(bestAt, 2, symbols[bestAt]! + symbols[bestAt + 1]!);
+  }
+
+  return symbols.flatMap(symbolToIds);
+}
+```
+
+This is not the fastest possible BPE implementation, but prompts are short and it is easy to diff against the reference tokenizer.
+
+### Mid-sequence fragments
+
+When forcing or constraining a fragment inside an existing sequence, encode without the dummy prefix:
+
+```ts
+encode(text);     // beginning of a SentencePiece sequence
+encodeRaw(text);  // fragment after existing tokens
+```
+
+Using normal `encode()` for a tool name in the middle of JSON silently injects a leading space token and changes model state.
+
+## 8. Decode bytes before UTF-8
+
+Byte-fallback tokens can split a multi-byte code point. Append all piece bytes first, then run one `TextDecoder`:
+
+```ts
+function pieceBytes(id: number): Uint8Array {
+  if (types[id] === BYTE) return Uint8Array.of(parsedByte[id]!);
+  if (types[id] === CONTROL || types[id] === UNKNOWN) return new Uint8Array();
+  return encoder.encode(pieces[id]!.replaceAll("▁", " "));
+}
+
+function decode(ids: number[]): string {
+  const bytes = concatenate(ids.map(pieceBytes));
+  let text = new TextDecoder().decode(bytes);
+  if (addDummyPrefix && text.startsWith(" ")) text = text.slice(1);
+  return text;
+}
+```
+
+<Aside type="tip" title="First parity milestone">
+Before implementing a layer, compare token IDs for plain text, every chat marker, Unicode, and schema JSON against the official tokenizer. A one-token prompt mismatch makes every later logit comparison meaningless.
+</Aside>
+
+## Minimal tests
+
+- bad magic and truncated headers fail
+- tensor offsets cannot escape the supplied subarray
+- CQ packed length plus FP16 norm length equals record length
+- `decode(encode(text))` round-trips spaces and non-ASCII input
+- chat markers produce one atomic ID
+- `encodeRaw("name")` differs from dummy-prefixed `encode("name")`
+
+Next: [implement packed matrix kernels and one token step](/tutorials/engine-2-forward-pass/).

@@ -1,0 +1,272 @@
+---
+title: "Inference engine, part 3: generation and tool grammar"
+description: Build chat prompts, incremental decoding, JSON Schema state machines, tool execution, retrieval, and confidence.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+A next-token function is not yet a tool-calling engine. This final part adds the trained conversation template, free reasoning, a continuous byte grammar, and an execution loop.
+
+## 1. Render the trained prompt
+
+The first user turn declares tools in compact JSON:
+
+```text
+<|im_start|>system
+{optional environment facts}<|im_end|>
+<|im_start|>user
+<tools>[{compact schemas}]</tools>
+{query}<|im_end|>
+<|im_start|>assistant
+```
+
+Prepend BOS ID 2, but do not append EOS before generation.
+
+Use `JSON.stringify()` without indentation. Schema whitespace consumes the short attention window and differs from training examples.
+
+After a call and execution result, continue with:
+
+```text
+<think>
+{reasoning}
+</think>
+<tool_call>[{calls}]</tool_call><|im_end|>
+<|im_start|>user
+<tool_result>[{results}]</tool_result><|im_end|>
+<|im_start|>assistant
+```
+
+A simple reference runtime can rebuild and prefill the whole transcript each turn. Prefix caching is an optimization, not a prerequisite for correctness.
+
+## 2. Free-run until a call or refusal
+
+Needle emits a short reasoning section before the tool-call marker. Greedily select normal logits until one of these conditions:
+
+- `<tool_call>`: feed the marker and enter constrained JSON decoding
+- `<|im_end|>` or EOS: return the empty call `[]`
+- reasoning token cap: decline rather than free-run forever
+
+```ts
+for (let i = 0; i < reasoningLimit; i++) {
+  const token = argmax(logits);
+
+  if (token === toolCallStartId) {
+    logits = await step(token);
+    openedCall = true;
+    break;
+  }
+  if (token === eosId || token === imEndId) break;
+
+  reasoningIds.push(token);
+  logits = await step(token);
+}
+```
+
+The reasoning text is useful metadata, but it does not make the JSON safe. The grammar does.
+
+## 3. Define the outer call language
+
+Needle's public call value is:
+
+```json
+[
+  {
+    "name": "tool_name",
+    "arguments": {
+      "parameter": "value"
+    }
+  }
+]
+```
+
+A compact state machine can enforce literals and select names by prefix:
+
+```text
+ARRAY_OPEN       expects [
+CALL_OPEN        expects {
+NAME_LITERAL     expects "name":"
+TOOL_NAME        prefix of one unused tool, then closing "
+ARGS_LITERAL     expects ,"arguments":
+ARGUMENTS        delegated JSON Schema value
+CALL_CLOSE       expects }
+AFTER_CALL       accepts ] or , followed by another call
+DONE
+```
+
+Track tools already emitted so one tool cannot repeat in a turn. Track a maximum call count.
+
+## 4. Build an incremental JSON Schema machine
+
+Use a stack of frames rather than reparsing the full output after each byte:
+
+```ts
+type Frame =
+  | { kind: "value"; schema: JsonSchema }
+  | { kind: "string"; bytes: number[]; escaped: boolean }
+  | { kind: "number"; text: string }
+  | { kind: "literal"; expected: Uint8Array; at: number }
+  | { kind: "array"; values: JsonValue[]; phase: ArrayPhase }
+  | { kind: "object"; value: Record<string, JsonValue>; used: string[]; phase: ObjectPhase }
+  | { kind: "choice"; candidates: Candidate[] }
+  | { kind: "key"; candidates: KeyCandidate[] };
+```
+
+Important behaviors:
+
+- An object key can only remain a prefix of an unused declared property.
+- Closing an object is legal only after every required key appears.
+- A comma cannot be followed immediately by `}` or `]`.
+- A number frame finalizes only when a non-number delimiter arrives; then the same byte is retried in the parent frame.
+- String bytes are decoded as one UTF-8 sequence at the closing quote, so byte-fallback tokens may split code points.
+- Range, enum, pattern, item-count, and property-count constraints are checked before a value frame completes.
+- Local `$ref` pointers resolve against the root schema.
+
+The machine must be cheap to clone because every candidate token gets a speculative state.
+
+## 5. Validate whole token pieces
+
+Never constrain by looking only at a token's first character. One token may contain several bytes and structural transitions.
+
+```ts
+let bestToken = -1;
+let bestState: ToolCallGrammar | undefined;
+
+for (let token = 0; token < vocabularySize; token++) {
+  if (!tokenizer.isNormalOrByte(token)) continue;
+
+  const candidate = grammar.clone();
+  if (!candidate.feed(tokenizer.pieceBytes(token))) continue;
+
+  if (bestToken < 0 || logits[token]! > logits[bestToken]!) {
+    bestToken = token;
+    bestState = candidate;
+  }
+}
+
+if (bestToken < 0 || !bestState) throw new Error("Grammar dead end");
+grammar = bestState;
+```
+
+Commit the selected token to model state unless the grammar is complete and you no longer need logits. Continue until `DONE`.
+
+<Aside type="note" title="Why bytes, not JavaScript characters?">
+Byte-fallback pieces may contain one byte of a multi-byte Unicode character. JSON escape syntax and control-character rules are byte-level constraints until a complete string can be decoded.
+</Aside>
+
+## 6. Calculate selected-token probability
+
+For a chosen token:
+
+```ts
+function logSoftmaxAt(logits: Float32Array, token: number): number {
+  let maximum = -Infinity;
+  for (const value of logits) maximum = Math.max(maximum, value);
+
+  let sum = 0;
+  for (const value of logits) sum += Math.exp(value - maximum);
+
+  return logits[token]! - maximum - Math.log(sum);
+}
+```
+
+Retain the minimum selected call-token probability. Structural validity does not guarantee semantic correctness; a low-probability forced path should lower confidence.
+
+## 7. Tool retrieval
+
+Five concise tools usually fit. For larger catalogues, rank documents composed of tool name plus description. A small BM25 implementation is deterministic and cheap:
+
+```text
+score(tool, query) = Σ IDF(term)
+  × tf(term, tool) × (k₁ + 1)
+  / (tf + k₁ × (1 − b + b × docLength / averageLength))
+```
+
+Take the highest-ranked prefix that fits a tokenizer-measured budget. Compile the grammar from exactly that selected set. This is a safety boundary: unselected tools cannot appear.
+
+## 8. Execute and continue
+
+```ts
+let response = await complete(query);
+const results: unknown[] = [];
+
+for (let step = 0; step < maxSteps; step++) {
+  if (response.type !== "call") break;
+
+  const turnResults = [];
+  for (const call of response.functionCalls) {
+    const implementation = implementations.get(call.name);
+    turnResults.push(
+      implementation
+        ? await implementation(call.arguments)
+        : { error: `Unknown tool: ${call.name}` },
+    );
+  }
+
+  results.push(...turnResults);
+  response = await complete(JSON.stringify(turnResults));
+}
+```
+
+Catch execution errors and feed `{ error: message }` back. The model can select a recovery tool on the next turn. Apply an overall step cap even when the model context has room.
+
+## 9. Pool confidence online
+
+The confidence head scores every token/layer cell against several learned probes, applies softmax over all cells, then projects concatenated pooled vectors.
+
+You do not need to retain all cells. For each probe, maintain:
+
+```text
+maximum score m
+denominator d = Σ exp(score − m)
+weighted vector w = Σ exp(score − m) × cell
+```
+
+When a new score exceeds `m`, rescale the old denominator and weighted vector by `exp(oldM − newM)` before adding the new cell. The final pooled vector is `w / d`.
+
+```text
+headConfidence = sigmoid(projection(concat(pooled probes)) + bias)
+callConfidence = min(headConfidence, minimum selected-token probability)
+```
+
+This keeps confidence memory constant with conversation length.
+
+## 10. Streaming API design
+
+Even when local inference is buffered, expose lifecycle events in a stable order:
+
+```text
+start
+thinking_start / thinking_delta / thinking_end
+toolcall_start / toolcall_delta / toolcall_end
+done
+```
+
+That lets framework adapters (`needle-ai-provider`, `needle-pi-ai-provider`) map native calls without inventing a second output shape. A future GPU-resident grammar can emit the same events earlier without changing consumers.
+
+## Correctness checklist
+
+<Steps>
+1. Compare tokenizer IDs against the official archive tokenizer.
+2. Compare dequantized-row dot products with direct packed matvec.
+3. Diff logits at every prompt position, not only final text.
+4. Verify exact call JSON for fixed prompts and schemas.
+5. Fuzz the grammar with valid and invalid nested values.
+6. Abort during weight download, prefill, reasoning, and constrained decode.
+7. Test context wrap with and without a pinned sink.
+8. Ensure every stream ends exactly once with `done` or `error`.
+</Steps>
+
+## Where to optimize next
+
+- Reuse prepared activations across Q/K/V/gate and mHC projections.
+- Cache the tool-schema prefix KV state across turns.
+- Replace naive BPE pair scans with a priority queue.
+- Keep GPU matrices, hidden state, and KV cache resident across layer dispatches.
+- Fuse dequantization, dot products, gates, and residual operations.
+- Use workers for CPU row parallelism without copying the model buffer.
+
+Keep the pure implementation as an executable specification. An optimized kernel is much easier to trust when every operator can be diffed against a small, readable reference.
+
+<Aside type="tip" title="Read the implementation">
+The matching source lives in `packages/needle.js/src`: `model/cact.ts`, `model/tokenizer.ts`, `backends/cq.ts`, `model/runtime.ts`, and `tools/grammar.ts` follow the same progression as these tutorials.
+</Aside>

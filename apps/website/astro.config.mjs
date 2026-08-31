@@ -46,6 +46,16 @@ export default defineConfig({
           ],
         },
         {
+          label: "Tutorials",
+          items: [
+            { label: "Inside the model", slug: "tutorials/model-structure" },
+            { label: "The .cact format", slug: "tutorials/cact-format" },
+            { label: "1. Loader and tokenizer", slug: "tutorials/engine-1-loader" },
+            { label: "2. Kernels and token step", slug: "tutorials/engine-2-forward-pass" },
+            { label: "3. Generation and grammar", slug: "tutorials/engine-3-generation" },
+          ],
+        },
+        {
           label: "Reference",
           items: [
             { label: "Tool calling", slug: "reference/tool-calling" },

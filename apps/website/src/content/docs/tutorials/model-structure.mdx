@@ -1,0 +1,218 @@
+---
+title: Inside the Needle 2 model
+description: Follow one token through embeddings, engrams, multi-lane hyper-connections, attention, and the Hadamard MLP.
+---
+
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+
+Needle 2 is a **Simple Attention Network** specialized for tool calling. It is small by current language-model standards—about 45 million parameters—but it is not a reduced Llama. Its memory and residual structure are deliberately different.
+
+This tutorial follows the public deployment archive used by `needle.js`:
+
+| Property | Value |
+| --- | ---: |
+| Vocabulary | 8,192 |
+| Hidden dimension | 512 |
+| Layers | 27 |
+| Query heads | 8 × 64 |
+| Key/value heads | 4 × 64 |
+| mHC lanes | 4 |
+| Engram orders | 2 and 3 |
+| Engram sites | layers 2 and 15 |
+| KV window | 256 tokens |
+| Maximum sequence | 2,048 tokens |
+
+## The token path
+
+```text
+ token id
+    │
+    ▼
+ tied CQ embedding × √512 ────────┐
+    │                             │
+    ├── hashed 2/3-gram tables ───┤ (at layers 2 and 15)
+    │                             │
+    ▼                             │
+ broadcast to four mHC lanes      │
+    │                             │
+    ├─ 27 × [lane pre-mix         │
+    │        + gated GQA          │
+    │        + Hadamard MLP       │
+    │        + Sinkhorn routing] ◄┘
+    │
+ mean lanes → final RMS norm → tied embeddingᵀ → 8,192 logits
+```
+
+<Steps>
+1. **Gather the embedding.** The input token selects one row from the tied embedding matrix. Multiply the 512-vector by `√512`.
+2. **Compute engram vectors.** Hash recent token 2-grams and 3-grams into four lookup tables. Project the concatenated rows into an engram key and value.
+3. **Broadcast to lanes.** Copy the embedding into four residual streams.
+4. **Run each layer.** An input-dependent gate reads all lanes, attention and the Hadamard MLP calculate an update, and a doubly stochastic matrix routes old lanes into new lanes.
+5. **Project logits.** Average the four lanes, normalize, and multiply by the same embedding matrix used at the input.
+</Steps>
+
+## Zero-centered RMS normalization
+
+Needle stores a learned offset rather than a conventional RMSNorm scale:
+
+```ts
+function zcrms(x: Float32Array, offset: Float32Array) {
+  let squareSum = 0;
+  for (const value of x) squareSum += value * value;
+  const inverseRms = 1 / Math.sqrt(squareSum / x.length + 1e-6);
+
+  return Float32Array.from(
+    x,
+    (value, index) => (1 + (offset[index] ?? 0)) * value * inverseRms,
+  );
+}
+```
+
+Initializing the stored offset to zero makes the effective scale one. The same operation normalizes layer input, queries, keys, post-attention output, the MLP input, and final hidden state.
+
+## Grouped-query attention
+
+Eight query heads share four key/value heads, so each KV head serves two query heads. For one token at logical position `p`:
+
+```text
+q = Wq · norm(x)       shape (8, 64)
+k = Wk · norm(x)       shape (4, 64)
+v = Wv · norm(x)       shape (4, 64)
+q = ZCRMS(q); k = ZCRMS(k)
+q, k = RoPE(q, k, p)
+```
+
+RoPE splits each 64-vector into two 32-value halves. It rotates `x[d]` with `x[d + 32]`; it does **not** use the interleaved even/odd layout found in some models.
+
+For query head `h`, choose KV head `floor(h / 2)`:
+
+```text
+score(t) = dot(q[h], K[kvHead, t]) / √64
+weight   = softmax(score)
+headOut  = Σ weight(t) · V[kvHead, t]
+```
+
+A learned projection gates every output channel before the final attention projection:
+
+```text
+gated = headOut × sigmoid(Wgate · attentionInput)
+attn  = Wo · gated
+x     = skip + sigmoid(attentionGate) × ZCRMS(attn)
+```
+
+The cache is int8 in the deployment engine. Each key and value vector gets its own absolute-maximum scale, so a cached element reconstructs as `int8 × scale`.
+
+## The fixed Hadamard MLP
+
+There is no large pair of learned feed-forward matrices. Instead Needle uses the normalized Walsh–Hadamard matrix `H`, three learned diagonals, and SiLU:
+
+```text
+z = H · (d1 × norm(x))
+z = SiLU(d2 × z)
+z = H · z
+mlp(x) = d3 × z
+```
+
+`H` is never stored. A fast Walsh–Hadamard transform computes it in `n log₂n` additions and subtractions:
+
+```ts
+function fwht(values: Float32Array) {
+  for (let stride = 1; stride < values.length; stride *= 2) {
+    for (let base = 0; base < values.length; base += stride * 2) {
+      for (let j = 0; j < stride; j++) {
+        const a = values[base + j]!;
+        const b = values[base + j + stride]!;
+        values[base + j] = a + b;
+        values[base + j + stride] = a - b;
+      }
+    }
+  }
+}
+```
+
+Multiply by `1 / √n` after each transform to match the orthonormal matrix.
+
+<CardGrid>
+  <Card title="Why this matters" icon="setting">
+    At hidden size 512, a transform costs only 4,608 butterfly pairs. Learned
+    parameters are three 512-value diagonals instead of two large dense matrices.
+  </Card>
+  <Card title="Quantization bonus" icon="puzzle">
+    Cactus Quants also rotates weight groups with a Hadamard matrix. Because the
+    transform is symmetric, an engine can rotate each activation group once and
+    dot directly against packed codebook indices.
+  </Card>
+</CardGrid>
+
+## Multi-lane hyper-connections
+
+The model carries four residual lanes `x[0…3]`, each 512 values. At the start of a layer, flatten all 2,048 values and RMS-normalize them:
+
+```text
+n = RMSUnit(flatten(x))
+hpre = sigmoid(a_pre × (Φpre · n) + b_pre + laneOffset)
+u = Σ hpre[lane] × x[lane]
+```
+
+`u` is the 512-vector sent through the attention/MLP block. One lane per layer receives a `+4` pre-offset; the other lanes receive `−4`, rotating the favored path across layers.
+
+The block returns an update `y = block(u) − u`. Two mechanisms build the next lanes:
+
+```text
+hpost = 2 × sigmoid(a_post × (Φpost · n) + b_post + postOffset)
+logits = a_res × reshape(Φres · n, 4, 4) + b_res
+R = Sinkhorn(logits)
+newX[i] = Σ R[i,j] × oldX[j] + hpost[i] × y
+```
+
+Twenty alternating log-space row and column normalizations turn `R` into an approximately doubly stochastic routing matrix. Log-space normalization matters: a linear-space implementation can underflow and produce NaNs.
+
+## Engram memory
+
+Attention remembers exact previous hidden states. Engrams add a different signal: learned rows selected by token n-grams.
+
+For every order and head, Needle starts from a deterministic seed and folds recent token IDs with 32-bit FNV-style multiplication:
+
+```ts
+hash = seed;
+for (let back = 0; back < order; back++) {
+  hash = Math.imul(hash ^ history[position - back], 0x01000193) >>> 0;
+}
+hash ^= hash >>> 15;
+slot = hash % 8192;
+```
+
+Two orders × two heads produce four table rows of 128 values. Concatenate them into 512 values, then calculate an engram key and value with learned projections. The value also passes through a four-tap causal, per-channel convolution at offsets `0, 3, 6, 9`.
+
+At an engram layer:
+
+```text
+α = sigmoid(dot(RMSUnit(u), RMSUnit(engramKey)) / √512)
+u = u + α × engramValue
+```
+
+The tables give the tiny model a large, cheap associative memory without extending the attention window.
+
+## Bounded attention with a sink
+
+The archive declares a 256-token recent window. For long conversations, old KV rows are overwritten in a ring. Tool schemas and early system context would disappear, so the runtime can pin an initial prefix as an attention sink:
+
+```text
+visible keys = pinned prefix ∪ latest 256 logical positions
+```
+
+This keeps memory bounded while preserving the instructions that define which calls are legal.
+
+## Output and confidence heads
+
+After layer 27, average lanes, apply final ZCRMS, and reuse the embedding matrix:
+
+```text
+logits = embedding · finalHidden
+```
+
+Optional probe heads pool every token/layer cell with learned query vectors. `needle.js` evaluates confidence pooling online with a numerically stable streaming softmax, so it does not retain all hidden cells. The final action confidence is combined with constrained-token probability.
+
+<Aside type="note" title="Next">
+Now that the operators are familiar, inspect how they are serialized in the [`.cact` archive](/tutorials/cact-format/), then build a minimal [loader and tokenizer](/tutorials/engine-1-loader/).
+</Aside>

@@ -1,0 +1,238 @@
+---
+title: The .cact archive and Cactus Quants
+description: Parse the deployment header, positional tensor directory, tokenizer blob, and mixed-bit CQ matrices.
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The official Needle deployment is one little-endian binary. It has no tensor names and requires no external tokenizer:
+
+```text
+┌──────────────────────────────┐ offset 0
+│ 120-byte geometry header     │
+├──────────────────────────────┤
+│ shared CQ codebooks (f32)    │
+├──────────────────────────────┤
+│ N × 44-byte tensor records   │
+├──────────────────────────────┤ 64-byte alignment
+│ tensor 0: tied embedding     │
+├──────────────────────────────┤
+│ tensor 1…: layer-major data  │
+├──────────────────────────────┤
+│ optional probe heads         │
+├──────────────────────────────┤
+│ raw tokenizer                │
+└──────────────────────────────┘
+```
+
+The base archive currently contains 405 tensors and occupies 13,737,807 bytes.
+
+## Header
+
+The first 29 fields are little-endian `u32`; the last field is `f32`:
+
+```ts
+const TAG = 0x05e12a83;
+const HEADER_BYTES = 120;
+
+const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+const u32 = (field: number) => view.getUint32(field * 4, true);
+
+if (u32(0) !== TAG) throw new Error("Not a .cact archive");
+
+const geometry = {
+  tensorCount: u32(1),
+  codebookLength: u32(2),
+  kvWindow: u32(3),
+  kvBits: u32(4),
+  vocabulary: u32(5),
+  hidden: u32(6),
+  queryHeads: u32(7),
+  kvHeads: u32(8),
+  layers: u32(9),
+  headDimension: u32(10),
+  maximumSequence: u32(11),
+  hadamardDimension: u32(12),
+  lanes: u32(13),
+  engramSlots: u32(14),
+  engramSubDimension: u32(15),
+  engramTables: u32(16),
+  engramTaps: u32(17),
+  engramDilation: u32(18),
+  orderCount: u32(19),
+  orders: [u32(20), u32(21), u32(22), u32(23)],
+  siteCount: u32(24),
+  sites: [u32(25), u32(26), u32(27), u32(28)],
+  ropeTheta: view.getFloat32(29 * 4, true),
+};
+```
+
+Validate dimensions before allocating. In particular, head counts must divide correctly and Hadamard/group dimensions must be powers of two.
+
+## Shared codebooks
+
+Immediately after the header is one f32 array:
+
+```text
+CQ2: entries  0…3    (4 levels)
+CQ3: entries  4…11   (8 levels)
+CQ4: entries 12…27  (16 levels)
+```
+
+The levels approximate a Gaussian distribution on a unit sphere and are already divided by `√groupSize` for the archive's quantization group.
+
+Ternary weights use record `bits = 5` as a format marker, not five bits per value. Their analytic levels are:
+
+```text
+{-1.2240064, 0, +1.2240064} / √groupSize
+```
+
+## Tensor directory
+
+Each nameless record is 44 bytes:
+
+| Offset | Type | Meaning |
+| ---: | --- | --- |
+| 0 | `u8` | dtype: 1 FP16, 2 FP32, 3 CQ, 4 RAW |
+| 1 | `u8` | rank, maximum 4 |
+| 2 | `u16` | padding |
+| 4 | `u32[4]` | dimensions |
+| 20 | `u64` | absolute blob offset |
+| 28 | `u64` | blob byte length |
+| 36 | `u32` | CQ group size |
+| 40 | `u32` | CQ record bits |
+
+```ts
+function readRecord(view: DataView, offset: number) {
+  const rank = view.getUint8(offset + 1);
+  return {
+    dtype: view.getUint8(offset),
+    shape: Array.from({ length: rank }, (_, i) =>
+      view.getUint32(offset + 4 + i * 4, true),
+    ),
+    offset: Number(view.getBigUint64(offset + 20, true)),
+    bytes: Number(view.getBigUint64(offset + 28, true)),
+    group: view.getUint32(offset + 36, true),
+    bits: view.getUint32(offset + 40, true),
+  };
+}
+```
+
+Do bounds checks with safe integers before making views. A malformed offset must fail before allocation or indexing.
+
+## Canonical tensor order
+
+Names are implied by position:
+
+<Steps>
+1. Tied embedding matrix.
+2. Fourteen tensors per layer: input norm, Q/K/V projections, Q/K norms, gate/output projections, post norm, scalar attention gate, pre-Hadamard norm, and `d1/d2/d3`.
+3. Nine mHC tensors: `a_pre`, `a_post`, `a_res`, `b_pre`, `b_post`, `b_res`, `phi_pre`, `phi_post`, `phi_res`.
+4. Four tensors per engram site: tables, key projection, value projection, taps.
+5. Final norm.
+6. Optional head manifest followed by triples of probes, projection, and bias.
+7. One RAW tokenizer blob.
+</Steps>
+
+Projection matrices are stored as `[output, input]`, already transposed for a row-major GEMV. mHC Φ tensors flatten layer/output rows for the same reason.
+
+## Anatomy of a CQ matrix
+
+For logical shape `[output, input]`, pad input to a multiple of the group size. A matrix blob concatenates:
+
+```text
+packed index rows
+fp16 L2 norm per (output row, input group)
+```
+
+For ordinary `b`-bit weights:
+
+```ts
+const inputPadded = Math.ceil(input / group) * group;
+const rowBytes = (inputPadded * bits) / 8;
+const packedBytes = output * rowBytes;
+const normCount = output * (inputPadded / group);
+
+if (blobBytes !== packedBytes + normCount * 2) {
+  throw new Error("Inconsistent CQ matrix length");
+}
+```
+
+Indices form a little-endian bitstream within each row. Index `k` occupies bits `[k×b, (k+1)×b)`.
+
+<Tabs>
+  <TabItem label="2-bit">
+    Four indices fit in one byte. The first column uses the lowest two bits.
+
+    ```ts
+    const byte = packed[rowOffset + (column >> 2)];
+    const index = (byte >> ((column & 3) * 2)) & 3;
+    ```
+  </TabItem>
+  <TabItem label="4-bit">
+    Two indices fit in one byte, low nibble first.
+
+    ```ts
+    const byte = packed[rowOffset + (column >> 1)];
+    const index = (byte >> ((column & 1) * 4)) & 15;
+    ```
+  </TabItem>
+  <TabItem label="3-bit">
+    Read a 16-bit window because an index may cross a byte boundary.
+
+    ```ts
+    const bit = column * 3;
+    const byte = bit >> 3;
+    const shift = bit & 7;
+    const window = packed[byte] | (packed[byte + 1] << 8);
+    const index = (window >> shift) & 7;
+    ```
+  </TabItem>
+</Tabs>
+
+## Reconstructing one group
+
+Training rotates each weight group with normalized Hadamard `H`, records its L2 norm, and replaces normalized values with nearest codebook indices. Dequantization reverses it:
+
+```text
+rotated[k] = codebook[index[k]] × norm
+denseGroup = rotated × H
+```
+
+A row gather—needed for embeddings and engram tables—must reconstruct the dense group. A matrix–vector multiply can avoid that work:
+
+```text
+((codebook[index] × norm) · H) · x
+       = (codebook[index] × norm) · (H · x)
+```
+
+Because normalized Hadamard is symmetric and orthogonal, rotate the activation once per group and dot packed levels directly. This identity is the central deployment trick.
+
+## Tokenizer blob
+
+The RAW tail begins with 24 bytes:
+
+```text
+u32 pieceCount
+u32 padId, eosId, bosId, unknownId
+u8  addDummyPrefix
+u8  byteFallback
+u16 padding
+```
+
+Each piece then stores:
+
+```text
+f32 score
+u8  type     // normal, unknown, control, user-defined, byte
+u16 utf8Length
+u8[utf8Length] surface
+```
+
+Chat markers such as `<|im_start|>`, `<tools>`, and `<tool_call>` are user-defined pieces, so they remain atomic during BPE.
+
+<Aside type="caution" title="Keep the quantized views">
+Expanding every CQ matrix to f32 turns a compact archive into roughly 180 MB and adds startup work. Parse dense control tensors to f32, but retain packed matrices as byte/norm views and dequantize only the rows or dot products you need.
+</Aside>
+
+Next: [write the loader and tokenizer](/tutorials/engine-1-loader/).

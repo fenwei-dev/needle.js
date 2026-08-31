@@ -1,0 +1,262 @@
+---
+title: "Inference engine, part 2: kernels and token step"
+description: Implement direct CQ matvec, row gather, engram state, mHC routing, attention, and logits.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+With a parsed archive and exact token IDs, implement one function:
+
+```ts
+async function step(token: number): Promise<Float32Array>;
+```
+
+It appends one token to state and returns logits for the next token. Prefill is simply repeated `step()` with the expensive final vocabulary projection skipped until the last prompt token.
+
+## 1. Fast Walsh–Hadamard transform
+
+The unnormalized in-place butterfly is shared by the Hadamard MLP, CQ activation preparation, and dense row reconstruction:
+
+```ts
+function fwht(x: Float32Array, offset: number, length: number): void {
+  for (let stride = 1; stride < length; stride <<= 1) {
+    for (let base = 0; base < length; base += stride << 1) {
+      for (let j = 0; j < stride; j++) {
+        const left = offset + base + j;
+        const right = left + stride;
+        const a = x[left]!;
+        const b = x[right]!;
+        x[left] = a + b;
+        x[right] = a - b;
+      }
+    }
+  }
+}
+```
+
+A useful identity test is `FWHT(FWHT(x)) = n × x`.
+
+## 2. Prepare an activation for CQ
+
+Pad input to the matrix's stored width, transform every group, and normalize:
+
+```ts
+function prepare(matrix: CqMatrix, input: Float32Array): Float32Array {
+  const out = new Float32Array(matrix.inputPadded);
+  out.set(input);
+  const scale = 1 / Math.sqrt(matrix.group);
+
+  for (let start = 0; start < out.length; start += matrix.group) {
+    fwht(out, start, matrix.group);
+    for (let k = 0; k < matrix.group; k++) out[start + k] *= scale;
+  }
+  return out;
+}
+```
+
+## 3. Dot packed rows directly
+
+For each output row and group:
+
+```text
+sum += fp16Norm[row, group]
+     × Σ codebook[packedIndex(row, column)] × prepared[column]
+```
+
+Specialize 2-bit and 4-bit loops so one byte lookup yields four or two codebook values. A 256-entry lookup table avoids shifts in the hot inner loop:
+
+```ts
+const lut2 = new Float32Array(256 * 4);
+for (let byte = 0; byte < 256; byte++) {
+  for (let crumb = 0; crumb < 4; crumb++) {
+    lut2[byte * 4 + crumb] = codebook2[(byte >> (crumb * 2)) & 3]!;
+  }
+}
+```
+
+Then:
+
+```ts
+for (let column = 0; column < group; column += 4) {
+  const byte = packed[rowPacked + (column >> 2)]!;
+  const at = byte * 4;
+  dot +=
+    lut2[at]! * x[column]! +
+    lut2[at + 1]! * x[column + 1]! +
+    lut2[at + 2]! * x[column + 2]! +
+    lut2[at + 3]! * x[column + 3]!;
+}
+```
+
+### Row gather
+
+Embeddings and engram tables need a dense row. Decode one group's levels multiplied by its norm, run normalized FWHT, and copy only unpadded columns. Test every bit width by asserting:
+
+```text
+cqMatvec(matrix, x)[row] ≈ dot(dequantizeRow(matrix, row), x)
+```
+
+## 4. Allocate incremental state
+
+For int8 KV, allocate:
+
+```text
+K, V:   [layers, kvHeads, physicalRows, headDimension] int8
+Kscale: [layers, kvHeads, physicalRows] f32
+Vscale: [layers, kvHeads, physicalRows] f32
+```
+
+When using a sink and a 256-token window:
+
+```ts
+function physicalSlot(position: number): number {
+  if (position < sinkLength) return position;
+  return sinkLength + ((position - sinkLength) % 256);
+}
+```
+
+Allocate an engram ring of `(taps − 1) × dilation + 1 = 10` rows per site, plus valid flags. Keep logical token history for n-gram hashes.
+
+## 5. Start the token step
+
+```ts
+history.push(token);
+const embedding = dequantizeRow(weights.embedding, token);
+const x0 = embedding.map((value) => value * Math.sqrt(hidden));
+let lanes = broadcast(x0, 4);
+const engrams = await updateEngrams(history);
+```
+
+Engram table gathers and projections happen once per token, before the layer loop. Push each raw value projection into the ring, then calculate its four-tap mix.
+
+## 6. Run mHC pre-mixing
+
+Flatten all lanes and normalize. Only select the Φ rows belonging to this layer; computing the entire `[layers × outputs]` matrix each time wastes work.
+
+```ts
+const n = rmsUnit(lanes);
+const phiPre = matvecRows(weights.phiPre, n, layer * 4, 4);
+
+for (let lane = 0; lane < 4; lane++) {
+  const offset = lane === layer % 4 ? 4 : -4;
+  hpre[lane] = sigmoid(aPre[layer] * phiPre[lane] + bPre[layer * 4 + lane] + offset);
+}
+
+const u = weightedLaneSum(lanes, hpre);
+```
+
+Compute `phiPost` and `phiResidual` from the same normalized lane input. An optimized backend can reuse the prepared CQ activation for all three.
+
+At layers 2 and 15, calculate engram affinity and add the gated value to the block input.
+
+## 7. Attention for one position
+
+<Steps>
+1. ZCRMS-normalize the 512-value block input.
+2. Calculate Q, K, V projections.
+3. ZCRMS each query/key head separately.
+4. Apply RoPE for the current logical position.
+5. Quantize and store four K/V vectors.
+6. Attend over pinned prefix positions plus recent logical positions.
+7. Multiply head output by `sigmoid(gateProjection × attentionInput)`.
+8. Apply output projection, post norm, and scalar residual gate.
+</Steps>
+
+Per-vector int8 quantization:
+
+```ts
+function storeInt8(source: Float32Array, cache: Int8Array, scaleAt: number) {
+  let maximum = 1e-12;
+  for (const value of source) maximum = Math.max(maximum, Math.abs(value));
+  const scale = maximum / 127;
+  scales[scaleAt] = scale;
+
+  for (let i = 0; i < source.length; i++) {
+    cache[cacheOffset + i] = roundTiesToEven(source[i]! / scale);
+  }
+}
+```
+
+During a key dot, multiply cached integers by their key scale. During the value sum, multiply each attention weight by the corresponding value scale.
+
+<Aside type="caution" title="Logical vs physical positions">
+RoPE and causal/window decisions always use monotonically increasing logical positions. Only cache addressing wraps through `physicalSlot()`. Using the ring index as the RoPE position destroys long-context behavior.
+</Aside>
+
+## 8. Hadamard MLP
+
+After attention:
+
+```ts
+const normalized = zcrms(afterAttention, layer.preHadamardNorm);
+const z = pad(normalized, hadamardDimension);
+
+multiplyInPlace(z, layer.d1);
+normalizedFwht(z);
+for (let i = 0; i < z.length; i++) z[i] = silu(layer.d2[i]! * z[i]!);
+normalizedFwht(z);
+multiplyInPlace(z, layer.d3);
+
+const blockOutput = afterAttention + z.slice(0, hidden);
+const update = blockOutput - u;
+```
+
+The subtraction by `u` is easy to miss: mHC wants the block's update, not the whole block output.
+
+## 9. Route into new lanes
+
+```ts
+const hpost = 2 * sigmoid(aPost * phiPost + bPost + postOffset);
+const routeLogits = reshape(aRes * phiResidual + bRes, 4, 4);
+const route = sinkhornLogSpace(routeLogits, 20);
+
+for (let target = 0; target < 4; target++) {
+  for (let column = 0; column < 512; column++) {
+    newLanes[target][column] =
+      sumOverSource(route[target][source] * lanes[source][column]) +
+      hpost[target] * update[column];
+  }
+}
+```
+
+For parity, implement log-sum-exp with a maximum subtraction on both axes before exponentiating after the twentieth iteration.
+
+## 10. Final logits
+
+After the last layer:
+
+```ts
+const hiddenState = meanLanes(lanes);
+const final = zcrms(hiddenState, weights.finalNorm);
+const logits = cqMatvec(weights.embedding, final);
+```
+
+The embedding is `[vocabulary, hidden]`, so the same packed matrix is both token lookup and output head.
+
+## Skip logits during prefill
+
+The vocabulary projection is one of the largest matvecs. Prompt tokens before the final one do not need logits:
+
+```ts
+for (let index = 0; index < promptIds.length; index++) {
+  logits = await step(promptIds[index]!, {
+    wantLogits: index === promptIds.length - 1,
+  });
+}
+```
+
+## Parity ladder
+
+Compare progressively:
+
+1. one dequantized row
+2. one packed matvec
+3. BOS token embedding and engram vectors
+4. each layer's lane input and output
+5. final logits at position zero
+6. every prompt position
+7. generated argmax IDs
+
+Logit errors accumulate through a recurrent cache, so finding the **first** divergent tensor is much easier than explaining a different token fifty steps later.
+
+Next: [generation and schema-constrained tool calls](/tutorials/engine-3-generation/).

@@ -1,5 +1,5 @@
 /// <reference types="@webgpu/types" preserve="true" />
-import type { CactWeights, CqMatrix } from "../model/cact.js";
+import type { CactLayer, CactWeights, CqMatrix } from "../model/cact.js";
 
 export type BackendKind = "cpu" | "typegpu" | "vgpu";
 
@@ -12,6 +12,26 @@ export interface MatvecRequest {
   readonly matrix: CqMatrix;
   readonly input: Float32Array;
   readonly range?: MatrixRowRange;
+}
+
+export interface FusedAttentionResetOptions {
+  readonly maximumLength: number;
+  readonly sinkLength: number;
+  readonly kvCache: "int8" | "float32";
+}
+
+export interface FusedAttentionRequest {
+  readonly layer: CactLayer;
+  readonly layerIndex: number;
+  readonly position: number;
+  readonly input: Float32Array;
+}
+
+/** Stateful accelerator owned and disposed by its backend. */
+export interface FusedAttentionSession {
+  reset(options: FusedAttentionResetOptions): boolean;
+  forward(request: FusedAttentionRequest): Promise<Float32Array>;
+  dispose(): void;
 }
 
 /** Minimal operator surface needed by the incremental Needle 2 decoder. */
@@ -34,6 +54,9 @@ export interface InferenceBackend {
   matvecBatch?(
     requests: readonly MatvecRequest[],
   ): readonly Float32Array[] | Promise<readonly Float32Array[]>;
+
+  /** Optional stateful Q/K/V, KV-cache, attention, gate, and output fusion. */
+  createFusedAttentionSession?(): FusedAttentionSession | undefined;
 
   /** Dequantizes one row. Embedding and engram gathers use this operation. */
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array;

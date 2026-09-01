@@ -1,4 +1,8 @@
-import type { InferenceBackend, MatvecRequest } from "../backends/backend.js";
+import type {
+  FusedAttentionSession,
+  InferenceBackend,
+  MatvecRequest,
+} from "../backends/backend.js";
 import { denseMatvec } from "../backends/cq.js";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactProbeHead, CactWeights } from "./cact.js";
@@ -114,11 +118,14 @@ export class NeedleRuntime {
   #engramDepth = 0;
   #engramPosition = 0;
   #confidencePool: OnlineProbePool | undefined;
+  #fusedAttention: FusedAttentionSession | undefined;
+  #fusedAttentionEnabled = false;
 
   constructor(weights: CactWeights, backend: InferenceBackend, options: RuntimeOptions = {}) {
     this.weights = weights;
     this.backend = backend;
     this.options = options;
+    this.#fusedAttention = backend.createFusedAttentionSession?.();
   }
 
   get position(): number {
@@ -148,25 +155,40 @@ export class NeedleRuntime {
       window > 0
         ? Math.min(options.maximumLength, this.#sinkLength + window)
         : options.maximumLength;
-    const kvElements =
-      geometry.numberOfLayers *
-      geometry.numberOfKVHeads *
-      this.#kvAllocation *
-      geometry.headDimension;
-    const scaleElements = geometry.numberOfLayers * geometry.numberOfKVHeads * this.#kvAllocation;
-    if ((this.options.kvCache ?? "int8") === "float32") {
-      this.#keyCacheFloat = new Float32Array(kvElements);
-      this.#valueCacheFloat = new Float32Array(kvElements);
+    this.#fusedAttentionEnabled =
+      this.#fusedAttention?.reset({
+        maximumLength: options.maximumLength,
+        sinkLength: this.#sinkLength,
+        kvCache: this.options.kvCache ?? "int8",
+      }) ?? false;
+    if (this.#fusedAttentionEnabled) {
       this.#keyCacheInt8 = undefined;
       this.#valueCacheInt8 = undefined;
-    } else {
-      this.#keyCacheInt8 = new Int8Array(kvElements);
-      this.#valueCacheInt8 = new Int8Array(kvElements);
       this.#keyCacheFloat = undefined;
       this.#valueCacheFloat = undefined;
+      this.#keyScale = new Float32Array(0);
+      this.#valueScale = new Float32Array(0);
+    } else {
+      const kvElements =
+        geometry.numberOfLayers *
+        geometry.numberOfKVHeads *
+        this.#kvAllocation *
+        geometry.headDimension;
+      const scaleElements = geometry.numberOfLayers * geometry.numberOfKVHeads * this.#kvAllocation;
+      if ((this.options.kvCache ?? "int8") === "float32") {
+        this.#keyCacheFloat = new Float32Array(kvElements);
+        this.#valueCacheFloat = new Float32Array(kvElements);
+        this.#keyCacheInt8 = undefined;
+        this.#valueCacheInt8 = undefined;
+      } else {
+        this.#keyCacheInt8 = new Int8Array(kvElements);
+        this.#valueCacheInt8 = new Int8Array(kvElements);
+        this.#keyCacheFloat = undefined;
+        this.#valueCacheFloat = undefined;
+      }
+      this.#keyScale = new Float32Array(scaleElements);
+      this.#valueScale = new Float32Array(scaleElements);
     }
-    this.#keyScale = new Float32Array(scaleElements);
-    this.#valueScale = new Float32Array(scaleElements);
 
     const maximumOrder = Math.max(1, ...geometry.engramOrders);
     this.#engramDepth = (geometry.engramConvolutionTaps - 1) * maximumOrder + 1;
@@ -304,47 +326,57 @@ export class NeedleRuntime {
 
       // Sandwich-normalized GQA attention.
       const attentionInput = rmsNorm(blockInput, layer.normInput);
-      const [query, key, value, gate] = await this.#matvecBatch([
-        { matrix: layer.queryProjection, input: attentionInput },
-        { matrix: layer.keyProjection, input: attentionInput },
-        { matrix: layer.valueProjection, input: attentionInput },
-        { matrix: layer.gateProjection, input: attentionInput },
-      ] as const);
-      for (let head = 0; head < geometry.numberOfHeads; head++) {
-        this.#rmsNormSlice(
+      let projected: Float32Array;
+      if (this.#fusedAttentionEnabled && this.#fusedAttention) {
+        projected = await this.#fusedAttention.forward({
+          layer,
+          layerIndex,
+          position,
+          input: attentionInput,
+        });
+      } else {
+        const [query, key, value, gate] = await this.#matvecBatch([
+          { matrix: layer.queryProjection, input: attentionInput },
+          { matrix: layer.keyProjection, input: attentionInput },
+          { matrix: layer.valueProjection, input: attentionInput },
+          { matrix: layer.gateProjection, input: attentionInput },
+        ] as const);
+        for (let head = 0; head < geometry.numberOfHeads; head++) {
+          this.#rmsNormSlice(
+            query,
+            head * geometry.headDimension,
+            geometry.headDimension,
+            layer.queryNorm,
+          );
+        }
+        for (let head = 0; head < geometry.numberOfKVHeads; head++) {
+          this.#rmsNormSlice(
+            key,
+            head * geometry.headDimension,
+            geometry.headDimension,
+            layer.keyNorm,
+          );
+        }
+        applyRope(
           query,
-          head * geometry.headDimension,
+          geometry.numberOfHeads,
           geometry.headDimension,
-          layer.queryNorm,
+          position,
+          geometry.ropeTheta,
         );
-      }
-      for (let head = 0; head < geometry.numberOfKVHeads; head++) {
-        this.#rmsNormSlice(
+        applyRope(
           key,
-          head * geometry.headDimension,
+          geometry.numberOfKVHeads,
           geometry.headDimension,
-          layer.keyNorm,
+          position,
+          geometry.ropeTheta,
         );
+        this.#storeKV(layerIndex, position, key, value);
+        const attentionOutput = this.#attention(layerIndex, position, query);
+        for (let index = 0; index < attentionWidth; index++)
+          attentionOutput[index] = (attentionOutput[index] ?? 0) * sigmoid(gate[index] ?? 0);
+        projected = await this.backend.matvec(layer.outputProjection, attentionOutput);
       }
-      applyRope(
-        query,
-        geometry.numberOfHeads,
-        geometry.headDimension,
-        position,
-        geometry.ropeTheta,
-      );
-      applyRope(
-        key,
-        geometry.numberOfKVHeads,
-        geometry.headDimension,
-        position,
-        geometry.ropeTheta,
-      );
-      this.#storeKV(layerIndex, position, key, value);
-      const attentionOutput = this.#attention(layerIndex, position, query);
-      for (let index = 0; index < attentionWidth; index++)
-        attentionOutput[index] = (attentionOutput[index] ?? 0) * sigmoid(gate[index] ?? 0);
-      const projected = await this.backend.matvec(layer.outputProjection, attentionOutput);
       const normalizedProjected = rmsNorm(projected, layer.postAttentionNorm);
       const attentionScale = sigmoid(layer.attentionGate);
       const afterAttention = new Float32Array(dimension);

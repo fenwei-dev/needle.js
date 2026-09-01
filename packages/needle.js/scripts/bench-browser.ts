@@ -11,6 +11,7 @@ export interface BrowserBenchOptions {
   prompt: string;
   modelUrl: string;
   minimumGpuRows?: number;
+  fusedAttention?: boolean;
 }
 
 export interface RunSample {
@@ -42,9 +43,14 @@ async function measureBackend(
       weights: { kind: "url", url: options.modelUrl, cache: false },
       backend: backend as BackendSelection,
       backendOptions:
-        backend === "cpu" || options.minimumGpuRows === undefined
+        backend === "cpu"
           ? undefined
-          : { minimumGpuRows: options.minimumGpuRows },
+          : {
+              ...(options.minimumGpuRows === undefined
+                ? {}
+                : { minimumGpuRows: options.minimumGpuRows }),
+              ...(backend === "typegpu" && options.fusedAttention ? { fusedAttention: true } : {}),
+            },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

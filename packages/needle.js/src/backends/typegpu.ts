@@ -2,13 +2,19 @@
 import { type TgpuRoot, tgpu } from "typegpu";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
-import type { InferenceBackend, MatrixRowRange, MatvecRequest } from "./backend.js";
+import type {
+  FusedAttentionSession,
+  InferenceBackend,
+  MatrixRowRange,
+  MatvecRequest,
+} from "./backend.js";
 import {
   cqMatvecPrepared,
   dequantizeCqRow,
   prepareCqActivation,
   prepareCqActivationCached,
 } from "./cq.js";
+import { TypeGPUFusedAttentionSession } from "./typegpu-attention.js";
 import {
   batchMatrixParameters,
   CQ_MATVEC_WGSL,
@@ -63,6 +69,8 @@ export interface TypeGPUBackendOptions {
    * Defaults to 1024 output rows. Set to 0 to force every matvec onto WebGPU.
    */
   readonly minimumGpuRows?: number;
+  /** Keep Q/K/V, int8 KV cache, attention, gate, and output projection on GPU. */
+  readonly fusedAttention?: boolean;
 }
 
 /** CQ matvec acceleration using a device initialized and owned through TypeGPU. */
@@ -85,6 +93,8 @@ export class TypeGPUBackend implements InferenceBackend {
   readonly #allocatedMatrices: GpuMatrix[] = [];
   readonly #allocatedBatchMatrices: GpuBatchMatrix[] = [];
   readonly #minimumGpuRows: number;
+  readonly #fusedAttentionEnabled: boolean;
+  #fusedAttentionSession: TypeGPUFusedAttentionSession | undefined;
   #batchPipeline: GPUComputePipeline | undefined;
   #batchPipelinePromise: Promise<GPUComputePipeline> | undefined;
   #disposed = false;
@@ -96,6 +106,7 @@ export class TypeGPUBackend implements InferenceBackend {
     pipeline: GPUComputePipeline,
     shaderModule: GPUShaderModule,
     minimumGpuRows: number,
+    fusedAttention: boolean,
   ) {
     this.root = root;
     this.device = root.device;
@@ -103,6 +114,7 @@ export class TypeGPUBackend implements InferenceBackend {
     this.#pipeline = pipeline;
     this.#shaderModule = shaderModule;
     this.#minimumGpuRows = minimumGpuRows;
+    this.#fusedAttentionEnabled = fusedAttention;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
@@ -158,6 +170,7 @@ export class TypeGPUBackend implements InferenceBackend {
         pipeline,
         module,
         normalizeMinimumGpuRows(options.minimumGpuRows),
+        options.fusedAttention ?? false,
       );
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
@@ -306,6 +319,15 @@ export class TypeGPUBackend implements InferenceBackend {
     return results;
   }
 
+  createFusedAttentionSession(): FusedAttentionSession | undefined {
+    invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "TypeGPU backend has been disposed");
+    if (!this.#fusedAttentionEnabled) return undefined;
+    if (!this.#fusedAttentionSession) {
+      this.#fusedAttentionSession = new TypeGPUFusedAttentionSession(this.device, this.weights);
+    }
+    return this.#fusedAttentionSession;
+  }
+
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {
     return dequantizeCqRow(matrix, row, output);
   }
@@ -318,6 +340,7 @@ export class TypeGPUBackend implements InferenceBackend {
       slot.output.destroy();
       slot.parameters.destroy();
     }
+    this.#fusedAttentionSession?.dispose();
     this.#codebook.destroy();
     this.#staging.destroy();
     for (const matrix of [...this.#allocatedMatrices, ...this.#allocatedBatchMatrices]) {

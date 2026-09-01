@@ -35,6 +35,7 @@ const agent = await createNeedleTypeGPU({
     // root: existingTgpuRoot,
     // device: existingGPUDevice,
     // minimumGpuRows: 0, // force all matvecs onto WebGPU
+    // fusedAttention: true, // experimental resident int8 KV + attention
   },
 });
 ```
@@ -89,7 +90,15 @@ The GPU backends accelerate packed CQ matrix–vector operators. Independent mHC
 
 A matvec with only 4–512 output rows is too small to amortize submission and synchronous readback in this architecture. Both backends therefore default `minimumGpuRows` to `1024`; smaller projections use the optimized TypeScript CQ kernel and the official model's 8,192-row vocabulary projection uses WebGPU. Set `minimumGpuRows: 0` to force every CQ matvec onto the GPU for diagnostics.
 
-This adaptive split slightly beats pure TypeScript on the measured Apple WebKit workload. A future fully resident engine could keep hidden state and KV cache on GPU and make the smaller projections worthwhile without intermediate readback. See [backend benchmarks](/needle.js/reference/benchmarks/).
+This adaptive split slightly beats pure TypeScript on the measured Apple WebKit workload. See [backend benchmarks](/needle.js/reference/benchmarks/).
+
+## Experimental resident attention
+
+TypeGPU accepts `fusedAttention: true`. A backend-owned runtime session keeps Q/K/V, the quantized int8 KV cache and scales, attention scores, gating, and the output projection on GPU. Query/key normalization, RoPE, cache updates, score computation, softmax, value mixing, activation preparation, and CQ output projection are encoded before one 512-value readback per layer.
+
+The session supports the published 512-dimensional, 8-query-head/4-KV-head geometry, int8 KV mode, and a combined sink/window span up to 512. Unsupported configurations automatically use the reference runtime.
+
+This cuts the forced-all-GPU path from about 83 host synchronization groups to about 56. It is opt-in because small-context WebGPU attention is currently slower than CPU attention despite removing readbacks. It is groundwork for a fully resident layer engine, where mHC routing and the Hadamard MLP would also remain on GPU.
 
 ## Custom backend
 
@@ -113,6 +122,7 @@ interface InferenceBackend {
   matvecBatch?(
     requests: readonly MatvecRequest[],
   ): readonly Float32Array[] | Promise<readonly Float32Array[]>;
+  createFusedAttentionSession?(): FusedAttentionSession | undefined;
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array;
   dispose(): void | Promise<void>;
 }

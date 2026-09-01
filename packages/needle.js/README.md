@@ -145,6 +145,7 @@ const agent = await createNeedleTypeGPU({
     init: { device: { optionalFeatures: ["shader-f16"] } },
     // Matvecs below this row count stay on CPU (default: 1024).
     // minimumGpuRows: 0, // force every matvec onto WebGPU
+    // fusedAttention: true, // experimental resident int8 KV + attention
   },
 });
 ```
@@ -195,6 +196,8 @@ bun run bench -- --minimum-gpu-rows 0 # diagnostic all-WebGPU matvec path
 ```
 
 Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/).
+
+TypeGPU also has an opt-in `fusedAttention` experiment. It keeps Q/K/V, the int8 KV cache, attention softmax, gating, and the output projection on GPU, reducing the forced-all-GPU path from about 83 host boundaries to about 56 per model step. It preserves greedy output in the measured prompts, but is not the default because its small-context attention kernels currently cost more than the readbacks they remove.
 
 ## Weight sources
 

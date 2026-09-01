@@ -25,6 +25,7 @@ interface CliOptions {
   prompt: string;
   json: boolean;
   minimumGpuRows: number | undefined;
+  fusedAttention: boolean;
 }
 
 const DEFAULT_PROMPT = "The most surprising thing about local inference is";
@@ -40,11 +41,13 @@ function parseArgs(argv: string[]): CliOptions {
     prompt: DEFAULT_PROMPT,
     json: false,
     minimumGpuRows: undefined,
+    fusedAttention: false,
   };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     const next = argv[index + 1];
     if (argument === "--json") options.json = true;
+    else if (argument === "--fused-attention") options.fusedAttention = true;
     else if (argument === "--backends" && next) {
       options.backends = next.split(",").map((name) => name.trim()) as BackendName[];
       index++;
@@ -83,6 +86,7 @@ Options:
   --runs <n>                    Timed generations (default 2)
   --prompt <text>               Generation prompt
   --minimum-gpu-rows <n>        CPU fallback cutoff (default 1024; 0 = all GPU)
+  --fused-attention             TypeGPU GPU-resident attention/KV experiment
   --json                        Print machine-readable JSON
 `);
 }
@@ -221,6 +225,7 @@ try {
     prompt: cli.prompt,
     modelUrl: `${origin}/model.cact`,
     ...(cli.minimumGpuRows === undefined ? {} : { minimumGpuRows: cli.minimumGpuRows }),
+    ...(cli.fusedAttention ? { fusedAttention: true } : {}),
   };
 
   process.stderr.write("running in WebView...\n");
@@ -246,6 +251,7 @@ const report = {
     runs: cli.runs,
     prompt: cli.prompt,
     minimumGpuRows: cli.minimumGpuRows ?? 1024,
+    fusedAttention: cli.fusedAttention,
   },
   results: page.results,
 };

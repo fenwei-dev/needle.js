@@ -47,7 +47,13 @@ This reduces host synchronization from roughly 220 individual matvec boundaries 
 
 These diagnostic medians use two warmups and three timed runs. Before batching, the same all-WebGPU paths measured 6.68 tok/s for TypeGPU and 11.33 tok/s for vgpu. A batch now uses one dispatch over cached, combined matrix arenas rather than one dispatch per projection.
 
-A future fully resident engine could keep hidden state, intermediate activations, and KV cache on GPU; encode dependent kernels into a small number of command buffers; and read back only selected tokens or final logits. That is the path to reducing synchronization from about 83 groups to one boundary per generated token.
+### Resident-attention experiment
+
+TypeGPU's opt-in `fusedAttention: true` keeps Q/K/V, int8 KV state, attention, gating, and output projection resident through one layer command buffer. It reduces the forced-all-GPU path from about 83 to about 56 host groups per model step and matched CPU greedy output on the benchmark prompts.
+
+For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok/s batched-matvec path: GPU softmax and cache kernels cost more than the readback they replace at this sequence length. It is therefore experimental rather than enabled by default. At a 98-token prompt it was approximately even with, and slightly ahead of, the non-resident all-GPU path.
+
+A complete resident engine would additionally keep mHC routing, hidden lanes, engram mixing, and the Hadamard MLP on GPU, reducing synchronization from about 56 groups to one boundary per generated token.
 
 ## Reproduce
 
@@ -60,6 +66,9 @@ bun run --cwd packages/needle.js bench -- --tokens 32 --warmup 1 --runs 2 --json
 
 # Diagnostic: force every matvec onto WebGPU
 bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0
+
+# TypeGPU resident-attention experiment
+bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --fused-attention
 ```
 
 The harness bundles `scripts/bench-browser.ts`, serves it locally, and drives `Bun.WebView` with the `webkit` backend so Chrome is not launched with `--disable-gpu`.

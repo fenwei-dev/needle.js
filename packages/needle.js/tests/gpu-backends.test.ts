@@ -79,6 +79,7 @@ describe("optional GPU backends", () => {
     });
     try {
       expect(backend.kind).toBe("typegpu");
+      expect(backend.createFusedAttentionSession()).toBeUndefined();
       const input = new Float32Array(8);
       expect(await backend.matvec(matrix, input)).toHaveLength(1);
       const batch = await backend.matvecBatch([

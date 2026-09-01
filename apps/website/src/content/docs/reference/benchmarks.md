@@ -119,3 +119,11 @@ bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers
 ```
 
 The harness bundles `scripts/bench-browser.ts`, serves it locally, and drives `Bun.WebView` with the `webkit` backend so Chrome is not launched with `--disable-gpu`.
+
+## Automated resident correctness
+
+```bash
+bun run --cwd packages/needle.js test:browser
+```
+
+The separate resident suite runs real model weights through WKWebView/WebGPU and checks greedy parity, prompt confidence tolerance, the exact constrained flashlight call, 270-token KV-window/prefix-sink behavior, deterministic resets, float32-KV fallback, and cancellation. The `Resident browser correctness` GitHub workflow runs it on macOS for relevant pushes and pull requests, caching the pinned model archive.

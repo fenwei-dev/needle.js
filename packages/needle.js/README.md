@@ -361,6 +361,7 @@ bun run typecheck
 bun test
 bun run build
 bun run bench
+NEEDLE_MODEL_PATH=/path/to/needle2.cact bun run test:browser
 ```
 
 Run the parity integration test against an official archive:
@@ -370,6 +371,8 @@ NEEDLE_MODEL_PATH=/path/to/needle2.cact bun test tests/model.integration.test.ts
 ```
 
 The fixture checks the published 8,192-token/27-layer geometry and an exact constrained flashlight call.
+
+`test:browser` bundles a real-browser suite and drives it through `Bun.WebView`. On macOS it uses WKWebView/WebGPU and verifies resident greedy text, confidence tolerance, constrained tool selection, KV-window wraparound with prefix sinks, repeated resets, float32-KV fallback, and cancellation. Without `NEEDLE_MODEL_PATH`, it downloads and caches the pinned model.
 
 ## Attribution and licenses
 

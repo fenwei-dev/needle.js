@@ -155,3 +155,7 @@ interface InferenceBackend {
 ```
 
 The interface is the seam used by all bundled implementations and a starting point for experimenting with WASM, WebNN, SIMD, or a fused WebGPU runtime.
+
+## Browser correctness suite
+
+Run `bun run --cwd packages/needle.js test:browser` to validate the resident TypeGPU path with real weights in Bun.WebView. It covers greedy and constrained decoding, confidence, long sliding-window attention with prefix sinks, resets, fallback, and cancellation. Set `RESIDENT_WEBVIEW_BACKEND=chrome` to exercise Bun's Chrome backend on a machine where headless WebGPU is enabled.

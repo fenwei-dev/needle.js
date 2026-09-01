@@ -6,6 +6,7 @@ out
 dist
 .astro
 .bench
+.resident-test
 .vercel
 *.tgz
 *.cact

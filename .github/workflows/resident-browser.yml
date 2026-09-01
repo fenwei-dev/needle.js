@@ -1,0 +1,44 @@
+name: Resident browser correctness
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packages/needle.js/**"
+      - ".github/workflows/resident-browser.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/needle.js/**"
+      - ".github/workflows/resident-browser.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  webkit-webgpu:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Cache Needle 2 weights
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/needle.js/models
+          key: needle2-b43aabfcaf1a6db6acf488076eab71d823c08697c7af4521fc1d174b60ede5ba
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck core package
+        run: bun run --cwd packages/needle.js typecheck
+
+      - name: Run WebKit resident suite
+        run: bun run --cwd packages/needle.js test:browser

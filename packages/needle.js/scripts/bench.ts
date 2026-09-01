@@ -7,7 +7,6 @@
  * three backends share tokenizer, weights, and host.
  *
  *   bun run --cwd packages/needle.js bench
- *   bun run --cwd packages/needle.js bench -- --backends cpu,vgpu --tokens 16
  */
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -15,7 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BackendResult, BrowserBenchOptions } from "./bench-browser.ts";
 
-type BackendName = "cpu" | "typegpu" | "vgpu";
+type BackendName = "cpu" | "typegpu";
 
 interface CliOptions {
   backends: BackendName[];
@@ -41,7 +40,7 @@ const PACKAGE_ROOT = join(ROOT, "..");
 
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
-    backends: ["cpu", "typegpu", "vgpu"],
+    backends: ["cpu", "typegpu"],
     tokens: 32,
     warmup: 1,
     runs: 2,
@@ -116,10 +115,10 @@ function parseArgs(argv: string[]): CliOptions {
 function printHelp(): void {
   console.log(`Usage: bun run scripts/bench.ts [options]
 
-Runs inside Bun.WebView so TypeGPU and vgpu can use browser WebGPU.
+Runs inside Bun.WebView so TypeGPU can use browser WebGPU.
 
 Options:
-  --backends cpu,typegpu,vgpu   Backends to measure
+  --backends cpu,typegpu        Backends to measure
   --tokens <n>                  Generated tokens per run (default 32)
   --warmup <n>                  Warmup generations (default 1)
   --runs <n>                    Timed generations (default 2)

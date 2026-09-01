@@ -1,9 +1,9 @@
 ---
 title: Backend benchmarks
-description: Measured Needle 2 generation throughput for the CPU, TypeGPU, and vgpu backends.
+description: Measured Needle 2 generation throughput for the CPU and TypeGPU backends.
 ---
 
-Needle 2 generation was timed in **Bun.WebView** (system WKWebView on macOS) so TypeGPU and vgpu use a real `navigator.gpu` device. All three backends loaded the same official 13.7 MB `.cact` archive and ran greedy generation from a shared prompt.
+Needle 2 generation was timed in **Bun.WebView** (system WKWebView on macOS) so TypeGPU uses a real `navigator.gpu` device. Both backends loaded the same official 13.7 MB `.cact` archive and ran greedy generation from a shared prompt.
 
 ## Latest numbers
 
@@ -13,7 +13,6 @@ The default GPU configuration is adaptive: CQ projections with fewer than 1,024 
 | --- | --- | ---: | ---: | ---: |
 | Pure TypeScript (`cpu`) | ok | 18 | 44.2 | 725 |
 | TypeGPU + WebGPU | ok | 17 | **50.8** | 630 |
-| vgpu + WebGPU | ok | 10 | 50.5 | 634 |
 
 - **Host:** macOS `darwin arm64`, Bun 1.4.0 WebView
 - **User agent:** `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)`
@@ -22,7 +21,7 @@ The default GPU configuration is adaptive: CQ projections with fewer than 1,024 
 - **Prompt:** `The most surprising thing about local inference is` (13 prompt tokens)
 - **GPU cutoff:** `minimumGpuRows: 1024` (the default)
 
-Both GPU backends produced the same greedy text as CPU on this prompt.
+TypeGPU produced the same greedy text as CPU on this prompt.
 
 ## Why the adaptive split wins
 
@@ -43,9 +42,8 @@ This reduces host synchronization from roughly 220 individual matvec boundaries 
 | Backend | Median tok/s | Median ms / 32 tokens |
 | --- | ---: | ---: |
 | TypeGPU, every matvec on WebGPU | 21.0 | 1,524 |
-| vgpu, every matvec on WebGPU | 23.3 | 1,376 |
 
-These diagnostic medians use two warmups and three timed runs. Before batching, the same all-WebGPU paths measured 6.68 tok/s for TypeGPU and 11.33 tok/s for vgpu. A batch now uses one dispatch over cached, combined matrix arenas rather than one dispatch per projection.
+These diagnostic medians use two warmups and three timed runs. Before batching, the all-WebGPU path measured 6.68 tok/s. A batch now uses one dispatch over cached, combined matrix arenas rather than one dispatch per projection.
 
 ### Resident-attention experiment
 

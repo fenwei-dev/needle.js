@@ -1,6 +1,6 @@
 ---
 title: Inference backends
-description: Choose pure TypeScript, TypeGPU, vgpu, or a custom Needle operator backend.
+description: Choose pure TypeScript, TypeGPU, or a custom Needle operator backend.
 ---
 
 The model architecture and decoding loop are backend-independent. A backend supplies two packed-weight operations: selected-row matrix–vector multiplication and row gather.
@@ -49,31 +49,6 @@ TypeGPU initializes or adopts the WebGPU device and resolves the CQ matvec WGSL.
 
 `execution: "adaptive"` uses the CPU/GPU row cutoff and is the portable default. `execution: "resident"` enables complete resident execution when the published geometry, int8 KV mode, and device limits are compatible; otherwise it automatically falls back. The granular fusion, row-cutoff, and submission options remain diagnostic controls.
 
-## vgpu
-
-```ts
-import { createNeedleVGPU } from "needle.js/vgpu";
-
-const agent = await createNeedleVGPU({
-  weights: "download",
-  tools,
-  backendOptions: {
-    // gpu: existingVgpuContext,
-    // device: existingGPUDevice,
-    // node: true,
-    // minimumGpuRows: 0, // force all matvecs onto WebGPU
-  },
-});
-```
-
-Install the optional peer:
-
-```bash
-bun add vgpu
-```
-
-The browser route uses `vgpu`; Node uses `vgpu/node`. A supplied context remains caller-owned.
-
 ## Automatic selection
 
 ```ts
@@ -83,13 +58,13 @@ const model = await NeedleModel.load({
 });
 ```
 
-In a browser with WebGPU, `auto` tries TypeGPU and then vgpu. Otherwise it uses CPU. Explicit GPU selection throws when initialization fails, which is preferable when GPU execution is a deployment requirement.
+In a browser with WebGPU, `auto` tries TypeGPU. Otherwise it uses CPU. Explicit GPU selection throws when initialization fails, which is preferable when GPU execution is a deployment requirement.
 
 ## Hybrid GPU execution
 
-The GPU backends accelerate packed CQ matrix–vector operators. Independent mHC projections, Q/K/V/gate projections, and engram key/value projections use `matvecBatch()`. Their packed weights and norms are combined into a cached arena, and one dispatch writes a contiguous result, so each group has one queue submission and one host synchronization. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent groups.
+The TypeGPU backend accelerates packed CQ matrix–vector operators. Independent mHC projections, Q/K/V/gate projections, and engram key/value projections use `matvecBatch()`. Their packed weights and norms are combined into a cached arena, and one dispatch writes a contiguous result, so each group has one queue submission and one host synchronization. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent groups.
 
-A matvec with only 4–512 output rows is too small to amortize submission and synchronous readback in this architecture. Both backends therefore default `minimumGpuRows` to `1024`; smaller projections use the optimized TypeScript CQ kernel and the official model's 8,192-row vocabulary projection uses WebGPU. Set `minimumGpuRows: 0` to force every CQ matvec onto the GPU for diagnostics.
+A matvec with only 4–512 output rows is too small to amortize submission and synchronous readback in this architecture. The adaptive backend therefore defaults `minimumGpuRows` to `1024`; smaller projections use the optimized TypeScript CQ kernel and the official model's 8,192-row vocabulary projection uses WebGPU. Set `minimumGpuRows: 0` to force every CQ matvec onto the GPU for diagnostics.
 
 This adaptive split slightly beats pure TypeScript on the measured Apple WebKit workload. See [backend benchmarks](/needle.js/reference/benchmarks/).
 
@@ -135,7 +110,7 @@ interface MatvecRequest {
 }
 
 interface InferenceBackend {
-  kind: "cpu" | "typegpu" | "vgpu";
+  kind: "cpu" | "typegpu";
   weights: CactWeights;
   matvec(
     matrix: CqMatrix,

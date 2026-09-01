@@ -1,23 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { init } from "vgpu/mock";
-import { TypeGPUBackend } from "../src/backends/typegpu.js";
-import { VGPUBackend } from "../src/backends/vgpu.js";
 import { batchMatrixParameters, webGpuBatchMatrixData } from "../src/backends/webgpu-kernel.js";
-import type { CactWeights, CqMatrix } from "../src/model/cact.js";
+import type { CqMatrix } from "../src/model/cact.js";
 
-function fixture(): { weights: CactWeights; matrix: CqMatrix } {
+function fixture(): CqMatrix {
   const codebook = new Float32Array(28);
   codebook.set([-0.5, -0.1, 0.1, 0.5]);
-  const record = {
-    index: 0,
-    dtype: 3,
-    shape: [1, 8],
-    offset: 0,
-    byteLength: 4,
-    groupSize: 8,
-    bits: 2,
-  } as const;
-  const matrix: CqMatrix = {
+  return {
     kind: "cq",
     shape: [1, 8],
     outputSize: 1,
@@ -33,19 +21,21 @@ function fixture(): { weights: CactWeights; matrix: CqMatrix } {
       [3, codebook.slice(4, 12)],
       [4, codebook.slice(12, 28)],
     ]),
-    record,
-  };
-  return {
-    matrix,
-    // Only fields consumed while constructing an operator backend are needed
-    // by this deterministic WebGPU API smoke fixture.
-    weights: { tensors: [matrix], codebook } as unknown as CactWeights,
+    record: {
+      index: 0,
+      dtype: 3,
+      shape: [1, 8],
+      offset: 0,
+      byteLength: 4,
+      groupSize: 8,
+      bits: 2,
+    },
   };
 }
 
-describe("optional GPU backends", () => {
+describe("WebGPU matrix arenas", () => {
   test("packs multiple matrices and their dispatch metadata into one arena", () => {
-    const { matrix } = fixture();
+    const matrix = fixture();
     const data = webGpuBatchMatrixData([matrix, matrix]);
     expect(data.packedWords).toHaveLength(2);
     expect(data.norms).toHaveLength(2);
@@ -69,70 +59,5 @@ describe("optional GPU backends", () => {
     expect(parameters[1]).toBe(0);
     expect(parameters[2]).toBe(1);
     expect(parameters[9]).toBe(0);
-  });
-  test("TypeGPU initializes, resolves WGSL, dispatches, and reads back", async () => {
-    const mock = await init();
-    const { weights, matrix } = fixture();
-    const backend = await TypeGPUBackend.create(weights, {
-      device: mock.gpu,
-      minimumGpuRows: 0,
-    });
-    try {
-      expect(backend.kind).toBe("typegpu");
-      expect(backend.execution).toBe("adaptive");
-      expect(backend.createFusedAttentionSession()).toBeUndefined();
-      const input = new Float32Array(8);
-      expect(await backend.matvec(matrix, input)).toHaveLength(1);
-      const batch = await backend.matvecBatch([
-        { matrix, input },
-        { matrix, input },
-      ]);
-      expect(batch).toHaveLength(2);
-      expect(batch[0]).toHaveLength(1);
-      expect(batch[1]).toHaveLength(1);
-    } finally {
-      backend.dispose();
-      mock.dispose();
-    }
-  });
-
-  test("TypeGPU exposes the consolidated resident policy", async () => {
-    const mock = await init();
-    const { weights } = fixture();
-    const backend = await TypeGPUBackend.create(weights, {
-      device: mock.gpu,
-      execution: "resident",
-    });
-    try {
-      expect(backend.execution).toBe("resident");
-    } finally {
-      backend.dispose();
-      mock.dispose();
-    }
-  });
-
-  test("vgpu initializes storage/compute, dispatches, and reads back", async () => {
-    const mock = await init();
-    const { weights, matrix } = fixture();
-    const backend = await VGPUBackend.create(weights, {
-      gpu: mock,
-      node: true,
-      minimumGpuRows: 0,
-    });
-    try {
-      expect(backend.kind).toBe("vgpu");
-      const input = new Float32Array(8);
-      expect(await backend.matvec(matrix, input)).toHaveLength(1);
-      const batch = await backend.matvecBatch([
-        { matrix, input },
-        { matrix, input },
-      ]);
-      expect(batch).toHaveLength(2);
-      expect(batch[0]).toHaveLength(1);
-      expect(batch[1]).toHaveLength(1);
-    } finally {
-      backend.dispose();
-      mock.dispose();
-    }
   });
 });

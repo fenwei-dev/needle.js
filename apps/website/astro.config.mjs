@@ -71,9 +71,5 @@ export default defineConfig({
   ],
   vite: {
     plugins: [tailwindcss()],
-    resolve: {
-      // The demo is browser-only; keep vgpu's optional Node adapter out of client chunks.
-      alias: { "vgpu/node": "vgpu" },
-    },
   },
 });

@@ -1,7 +1,7 @@
 import type { BackendSelection, GenerationResult } from "../src/index.js";
 import { BOS_TOKEN_ID, Needle, NeedleModel } from "../src/index.js";
 
-type BackendName = "cpu" | "typegpu" | "vgpu";
+type BackendName = "cpu" | "typegpu";
 
 export interface BrowserBenchOptions {
   backends: BackendName[];
@@ -76,7 +76,7 @@ async function measureBackend(
     const message = error instanceof Error ? error.message : String(error);
     return {
       backend,
-      status: /webgpu|gpu|adapter|typegpu|vgpu|BACKEND|not supported/i.test(message)
+      status: /webgpu|gpu|adapter|typegpu|BACKEND|not supported/i.test(message)
         ? "skipped"
         : "error",
       error: message,

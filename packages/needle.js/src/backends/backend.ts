@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" preserve="true" />
 import type { CactLayer, CactWeights, CqMatrix } from "../model/cact.js";
 
-export type BackendKind = "cpu" | "typegpu" | "vgpu";
+export type BackendKind = "cpu" | "typegpu";
 
 export interface MatrixRowRange {
   readonly rowStart?: number;

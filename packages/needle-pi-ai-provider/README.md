@@ -82,7 +82,7 @@ The first inference downloads and caches the official model. Configure the exten
 # Use a local or tuned archive instead of downloading the base model
 export NEEDLE_MODEL_PATH=/path/to/needle2.cact
 
-# cpu (default), typegpu, vgpu, or auto
+# cpu (default), typegpu, or auto
 export NEEDLE_BACKEND=cpu
 
 pi --provider needle --model needle-2

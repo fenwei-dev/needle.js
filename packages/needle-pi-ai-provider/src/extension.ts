@@ -15,6 +15,6 @@ export default function needlePiExtension(pi: ExtensionAPI): void {
 }
 
 function readBackend(value: string | undefined): BackendSelection {
-  if (value === "typegpu" || value === "vgpu" || value === "auto") return value;
+  if (value === "typegpu" || value === "auto") return value;
   return "cpu";
 }

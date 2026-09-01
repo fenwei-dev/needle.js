@@ -39,7 +39,6 @@ Other dependencies
 ------------------
 
 TypeGPU is Copyright Software Mansion and contributors, MIT licensed.
-vgpu is Copyright its contributors, MIT licensed.
 @webgpu/types is maintained by the GPU for the Web Community Group and is
 BSD-3-Clause licensed. Dependencies distributed as separate npm packages
 retain their own license files and notices.

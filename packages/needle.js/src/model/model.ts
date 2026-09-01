@@ -8,7 +8,7 @@ import { argmax, logSoftmaxAt } from "./math.js";
 import { NeedleRuntime, type RuntimeOptions } from "./runtime.js";
 import { BOS_TOKEN_ID, EOS_TOKEN_ID, NeedleTokenizer } from "./tokenizer.js";
 
-export type BackendSelection = "cpu" | "typegpu" | "vgpu" | "auto" | InferenceBackend;
+export type BackendSelection = "cpu" | "typegpu" | "auto" | InferenceBackend;
 
 export interface LoadModelOptions extends LoadWeightsOptions {
   readonly weights?: WeightSource;
@@ -186,20 +186,6 @@ async function resolveBackend(
       );
     }
   }
-  if (selection === "vgpu") {
-    try {
-      const { createVGPUBackend } = await import("../backends/vgpu.js");
-      return createVGPUBackend(weights, (options ?? {}) as never);
-    } catch (cause) {
-      if (cause instanceof NeedleError) throw cause;
-      throw new NeedleError(
-        "BACKEND_UNAVAILABLE",
-        "The vgpu backend requires the optional `vgpu` peer dependency and WebGPU",
-        { cause },
-      );
-    }
-  }
-
   // Auto intentionally falls through to the portable backend. Applications
   // can request a GPU backend explicitly to make a missing GPU actionable.
   if (typeof navigator !== "undefined" && navigator.gpu) {
@@ -207,12 +193,7 @@ async function resolveBackend(
       const { createTypeGPUBackend } = await import("../backends/typegpu.js");
       return await createTypeGPUBackend(weights, (options ?? {}) as never);
     } catch {
-      try {
-        const { createVGPUBackend } = await import("../backends/vgpu.js");
-        return await createVGPUBackend(weights, (options ?? {}) as never);
-      } catch {
-        // Portable fallback below.
-      }
+      // Portable fallback below.
     }
   }
   return new CpuBackend(weights);

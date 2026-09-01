@@ -4,15 +4,14 @@ A TypeScript inference library for **Needle 2**, Cactus Compute's 45M-parameter 
 
 > **Unofficial implementation:** needle.js is an independent project and is not affiliated with or endorsed by Cactus Compute.
 
-The package provides three interchangeable implementations:
+The package provides two interchangeable implementations:
 
 | Entry point | Backend | Extra requirement |
 | --- | --- | --- |
 | `needle.js/cpu` | Pure TypeScript | None |
 | `needle.js/typegpu` | TypeGPU + WebGPU | `typegpu` and a WebGPU device |
-| `needle.js/vgpu` | vgpu + WebGPU | `vgpu` and a WebGPU device |
 
-All three use the same tokenizer, incremental decoder, conversation API, and continuous byte-level JSON Schema grammar. The GPU implementations offload sufficiently large packed Cactus-Quant matrix-vector products to WebGPU while TypeScript handles small projections, recurrent operations, attention, and grammar.
+Both use the same tokenizer, incremental decoder, conversation API, and continuous byte-level JSON Schema grammar. The GPU implementation offloads sufficiently large packed Cactus-Quant matrix-vector products to WebGPU while TypeScript handles small projections, recurrent operations, attention, and grammar.
 
 ## Implemented
 
@@ -44,12 +43,10 @@ bun add needle.js
 For a GPU backend, install its optional peer:
 
 ```bash
-npm install typegpu       # TypeGPU version
-# or
-npm install vgpu          # vgpu version
+npm install typegpu       # WebGPU version
 ```
 
-Node-side WebGPU initialization depends on the selected package and platform. A browser can use `navigator.gpu`; both backends also accept an existing `GPUDevice`.
+Node-side WebGPU initialization requires a platform WebGPU device provider. A browser can use `navigator.gpu`; TypeGPU can also adopt an existing `GPUDevice`.
 
 ## Quick start: tool calling
 
@@ -115,7 +112,7 @@ agent.reset(); // clear conversation state, retain model and tools
 
 The response includes camel-case `functionCalls` and an official-envelope-compatible `function_calls` alias.
 
-## Pure TypeScript, TypeGPU, and vgpu
+## Pure TypeScript and TypeGPU
 
 ### Pure TypeScript
 
@@ -150,30 +147,13 @@ const agent = await createNeedleTypeGPU({
 
 The backend acquires its device through `tgpu.init()` or adopts one through `tgpu.initFromDevice()`. `execution: "resident"` enables the complete compatible resident path and automatically falls back to adaptive operators for unsupported geometry or KV modes. Granular options such as `minimumGpuRows`, `fusedAttention`, `fusedMlp`, `fusedRouting`, `residentLayers`, and `singleTokenSubmission` remain available only for diagnostics.
 
-### vgpu
-
-```ts
-import { createNeedleVGPU } from "needle.js/vgpu";
-
-const agent = await createNeedleVGPU({
-  weights: "download",
-  tools: [getWeather],
-  backendOptions: {
-    // Optional: gpu, device, init, or node: true
-    // minimumGpuRows: 0, // force every matvec onto WebGPU
-  },
-});
-```
-
-In Node, the vgpu backend uses `vgpu/node`; in a browser it uses `vgpu`. Passing `gpu` keeps its lifetime caller-owned. Passing `device` adopts the device via vgpu's `initFromDevice()` API.
-
 You can also use the generic factory:
 
 ```ts
 const model = await NeedleModel.load({ backend: "auto", weights: "download" });
 ```
 
-`auto` tries TypeGPU and then vgpu when browser WebGPU is visible, and otherwise falls back to the pure TypeScript backend. Explicit GPU selection throws a useful error rather than silently changing backend.
+`auto` tries TypeGPU when browser WebGPU is visible and otherwise falls back to the pure TypeScript backend. Explicit GPU selection throws a useful error rather than silently changing backend.
 
 ## Benchmarks
 
@@ -183,9 +163,8 @@ Greedy generation of 32 tokens in Bun.WebView (WKWebView + WebGPU, macOS arm64, 
 | --- | ---: | ---: |
 | Pure TypeScript | 44.2 | 725 |
 | TypeGPU | **50.8** | 630 |
-| vgpu | 50.5 | 634 |
 
-The WebGPU shader reduces each CQ row across a 32-lane workgroup. Independent mHC, Q/K/V/gate, and engram projections are packed into one matrix arena and executed with one dispatch and one host synchronization per group. By default, projections below 1,024 output rows still stay on CPU because their readback cost exceeds their compute time; for the official model, WebGPU therefore handles the 8,192-row vocabulary projection. Forcing every matvec onto WebGPU now measures 21.0 tok/s with TypeGPU and 23.3 tok/s with vgpu, up from 6.68 and 11.33 tok/s before batching. Reproduce with:
+The WebGPU shader reduces each CQ row across a 32-lane workgroup. Independent mHC, Q/K/V/gate, and engram projections are packed into one matrix arena and executed with one dispatch and one host synchronization per group. By default, projections below 1,024 output rows still stay on CPU because their readback cost exceeds their compute time; for the official model, WebGPU therefore handles the 8,192-row vocabulary projection. Forcing every matvec onto WebGPU measures about 21 tok/s with the operator path; resident execution avoids those per-operator boundaries and reaches about 52 tok/s. Reproduce with:
 
 ```bash
 bun run bench

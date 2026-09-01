@@ -366,6 +366,84 @@ fn hadamard_mlp_delta(@builtin(local_invocation_id) local: vec3u) {
 }
 `;
 
+export const POST_MHC_ROUTING_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> lanes_input: array<f32>;
+@group(0) @binding(1) var<storage, read> phi_post: array<f32>;
+@group(0) @binding(2) var<storage, read> phi_residual: array<f32>;
+@group(0) @binding(3) var<storage, read> delta: array<f32>;
+@group(0) @binding(4) var<storage, read> params: array<f32>;
+@group(0) @binding(5) var<storage, read_write> next_lanes: array<f32>;
+
+var<workgroup> h_post: array<f32, 4>;
+var<workgroup> routing: array<f32, 16>;
+
+fn sigmoid(value: f32) -> f32 {
+  return 1.0 / (1.0 + exp(-value));
+}
+
+@compute @workgroup_size(128)
+fn post_mhc_routing(@builtin(local_invocation_id) local: vec3u) {
+  if (local.x == 0u) {
+    let own_lane = u32(params[2]);
+    for (var lane = 0u; lane < 4u; lane++) {
+      var offset = -4.0;
+      if (lane == own_lane) { offset = 0.0; }
+      h_post[lane] = 2.0 * sigmoid(params[0] * phi_post[lane] + params[3u + lane] + offset);
+    }
+    for (var index = 0u; index < 16u; index++) {
+      routing[index] = params[1] * phi_residual[index] + params[7u + index];
+    }
+    for (var iteration = 0u; iteration < 20u; iteration++) {
+      for (var row = 0u; row < 4u; row++) {
+        let base = row * 4u;
+        var maximum = routing[base];
+        for (var column = 1u; column < 4u; column++) {
+          maximum = max(maximum, routing[base + column]);
+        }
+        var sum = 0.0;
+        for (var column = 0u; column < 4u; column++) {
+          sum = sum + exp(routing[base + column] - maximum);
+        }
+        let log_sum = log(sum) + maximum;
+        for (var column = 0u; column < 4u; column++) {
+          routing[base + column] = routing[base + column] - log_sum;
+        }
+      }
+      for (var column = 0u; column < 4u; column++) {
+        var maximum = routing[column];
+        for (var row = 1u; row < 4u; row++) {
+          maximum = max(maximum, routing[row * 4u + column]);
+        }
+        var sum = 0.0;
+        for (var row = 0u; row < 4u; row++) {
+          sum = sum + exp(routing[row * 4u + column] - maximum);
+        }
+        let log_sum = log(sum) + maximum;
+        for (var row = 0u; row < 4u; row++) {
+          let index = row * 4u + column;
+          routing[index] = routing[index] - log_sum;
+        }
+      }
+    }
+    for (var index = 0u; index < 16u; index++) {
+      routing[index] = exp(routing[index]);
+    }
+  }
+  workgroupBarrier();
+
+  for (var index = local.x; index < 2048u; index += 128u) {
+    let lane = index / 512u;
+    let column = index % 512u;
+    var value = 0.0;
+    for (var source_lane = 0u; source_lane < 4u; source_lane++) {
+      value = value +
+        routing[lane * 4u + source_lane] * lanes_input[source_lane * 512u + column];
+    }
+    next_lanes[index] = value + h_post[lane] * delta[column];
+  }
+}
+`;
+
 export const PREPARE_ATTENTION_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read> source: array<f32>;
 @group(0) @binding(1) var<storage, read_write> prepared: array<f32>;

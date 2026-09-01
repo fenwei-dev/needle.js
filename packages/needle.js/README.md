@@ -147,6 +147,7 @@ const agent = await createNeedleTypeGPU({
     // minimumGpuRows: 0, // force every matvec onto WebGPU
     // fusedAttention: true, // experimental resident int8 KV + attention
     // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
+    // fusedRouting: true, // also fuse post-mHC Sinkhorn and nextX lanes
   },
 });
 ```
@@ -198,7 +199,7 @@ bun run bench -- --minimum-gpu-rows 0 # diagnostic all-WebGPU matvec path
 
 Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/).
 
-TypeGPU also has an opt-in `fusedAttention` experiment. It keeps Q/K/V, the int8 KV cache, attention softmax, gating, and the output projection on GPU, reducing the forced-all-GPU path from about 83 host boundaries to about 56 per model step. `fusedMlp: true` additionally executes sandwich residual normalization and both 512-point Hadamard transforms before returning the layer delta. Both preserve greedy output in the measured prompts, but are not defaults because their small-context kernels currently cost more than the CPU work/readbacks they remove.
+TypeGPU also has an opt-in `fusedAttention` experiment. It keeps Q/K/V, the int8 KV cache, attention softmax, gating, and the output projection on GPU, reducing the forced-all-GPU path from about 83 host boundaries to about 56 per model step. `fusedMlp: true` additionally executes sandwich residual normalization and both 512-point Hadamard transforms before returning the layer delta. `fusedRouting: true` continues through h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. All preserve greedy output in the measured prompts, but are not defaults because isolated residency stages currently cost more than the CPU work/readbacks they remove.
 
 ## Weight sources
 

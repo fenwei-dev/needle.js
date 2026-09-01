@@ -255,7 +255,7 @@ export class NeedleRuntime {
       scaledEmbedding[index] = (embedding[index] ?? 0) * embeddingScale;
     this.#confidencePool?.add(scaledEmbedding);
 
-    let x = new Float32Array(lanes * dimension);
+    let x: Float32Array = new Float32Array(lanes * dimension);
     for (let lane = 0; lane < lanes; lane++) x.set(scaledEmbedding, lane * dimension);
     const [engramKeys, engramValues] = await this.#engramStep();
     const attentionWidth = geometry.numberOfHeads * geometry.headDimension;
@@ -326,7 +326,8 @@ export class NeedleRuntime {
 
       // Sandwich-normalized GQA attention.
       const attentionInput = rmsNorm(blockInput, layer.normInput);
-      let delta: Float32Array;
+      let delta: Float32Array | undefined;
+      let fusedNextX: Float32Array | undefined;
       if (this.#fusedAttentionEnabled && this.#fusedAttention) {
         const fused = await this.#fusedAttention.forward({
           layer,
@@ -335,11 +336,18 @@ export class NeedleRuntime {
           input: attentionInput,
           blockInput,
           updateInput,
+          x,
+          phiPost,
+          phiResidual,
         });
-        delta =
-          fused.kind === "delta"
-            ? fused.values
-            : this.#attentionDelta(fused.values, blockInput, updateInput, layer);
+        if (fused.kind === "nextX") {
+          fusedNextX = fused.values;
+        } else {
+          delta =
+            fused.kind === "delta"
+              ? fused.values
+              : this.#attentionDelta(fused.values, blockInput, updateInput, layer);
+        }
       } else {
         const [query, key, value, gate] = await this.#matvecBatch([
           { matrix: layer.queryProjection, input: attentionInput },
@@ -385,33 +393,38 @@ export class NeedleRuntime {
         delta = this.#attentionDelta(projected, blockInput, updateInput, layer);
       }
 
-      const hPost = new Float32Array(lanes);
-      for (let lane = 0; lane < lanes; lane++) {
-        const offset = lane === ownLane ? 0 : -4;
-        hPost[lane] =
-          2 *
-          sigmoid(
-            (this.weights.mhcAPost[layerIndex] ?? 0) * (phiPost[lane] ?? 0) +
-              (this.weights.mhcBPost[layerIndex * lanes + lane] ?? 0) +
-              offset,
-          );
-      }
-      const routing = new Float32Array(lanes * lanes);
-      for (let index = 0; index < routing.length; index++) {
-        routing[index] =
-          (this.weights.mhcAResidual[layerIndex] ?? 0) * (phiResidual[index] ?? 0) +
-          (this.weights.mhcBResidual[layerIndex * lanes * lanes + index] ?? 0);
-      }
-      sinkhorn(routing, lanes);
-      const nextX = new Float32Array(x.length);
-      for (let lane = 0; lane < lanes; lane++) {
-        for (let column = 0; column < dimension; column++) {
-          let sum = 0;
-          for (let sourceLane = 0; sourceLane < lanes; sourceLane++) {
-            sum +=
-              (routing[lane * lanes + sourceLane] ?? 0) * (x[sourceLane * dimension + column] ?? 0);
+      let nextX = fusedNextX;
+      if (!nextX) {
+        invariant(delta, "BACKEND_UNAVAILABLE", "Layer delta is missing");
+        const hPost = new Float32Array(lanes);
+        for (let lane = 0; lane < lanes; lane++) {
+          const offset = lane === ownLane ? 0 : -4;
+          hPost[lane] =
+            2 *
+            sigmoid(
+              (this.weights.mhcAPost[layerIndex] ?? 0) * (phiPost[lane] ?? 0) +
+                (this.weights.mhcBPost[layerIndex * lanes + lane] ?? 0) +
+                offset,
+            );
+        }
+        const routing = new Float32Array(lanes * lanes);
+        for (let index = 0; index < routing.length; index++) {
+          routing[index] =
+            (this.weights.mhcAResidual[layerIndex] ?? 0) * (phiResidual[index] ?? 0) +
+            (this.weights.mhcBResidual[layerIndex * lanes * lanes + index] ?? 0);
+        }
+        sinkhorn(routing, lanes);
+        nextX = new Float32Array(x.length);
+        for (let lane = 0; lane < lanes; lane++) {
+          for (let column = 0; column < dimension; column++) {
+            let sum = 0;
+            for (let sourceLane = 0; sourceLane < lanes; sourceLane++) {
+              sum +=
+                (routing[lane * lanes + sourceLane] ?? 0) *
+                (x[sourceLane * dimension + column] ?? 0);
+            }
+            nextX[lane * dimension + column] = sum + (hPost[lane] ?? 0) * (delta[column] ?? 0);
           }
-          nextX[lane * dimension + column] = sum + (hPost[lane] ?? 0) * (delta[column] ?? 0);
         }
       }
       x = nextX;

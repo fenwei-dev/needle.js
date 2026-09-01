@@ -27,6 +27,7 @@ interface CliOptions {
   minimumGpuRows: number | undefined;
   fusedAttention: boolean;
   fusedMlp: boolean;
+  fusedRouting: boolean;
 }
 
 const DEFAULT_PROMPT = "The most surprising thing about local inference is";
@@ -44,6 +45,7 @@ function parseArgs(argv: string[]): CliOptions {
     minimumGpuRows: undefined,
     fusedAttention: false,
     fusedMlp: false,
+    fusedRouting: false,
   };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
@@ -53,6 +55,10 @@ function parseArgs(argv: string[]): CliOptions {
     else if (argument === "--fused-mlp") {
       options.fusedAttention = true;
       options.fusedMlp = true;
+    } else if (argument === "--fused-routing") {
+      options.fusedAttention = true;
+      options.fusedMlp = true;
+      options.fusedRouting = true;
     } else if (argument === "--backends" && next) {
       options.backends = next.split(",").map((name) => name.trim()) as BackendName[];
       index++;
@@ -93,6 +99,7 @@ Options:
   --minimum-gpu-rows <n>        CPU fallback cutoff (default 1024; 0 = all GPU)
   --fused-attention             TypeGPU GPU-resident attention/KV experiment
   --fused-mlp                   Also fuse sandwich residuals and Hadamard MLP
+  --fused-routing               Also fuse post-mHC routing and nextX lanes
   --json                        Print machine-readable JSON
 `);
 }
@@ -233,6 +240,7 @@ try {
     ...(cli.minimumGpuRows === undefined ? {} : { minimumGpuRows: cli.minimumGpuRows }),
     ...(cli.fusedAttention ? { fusedAttention: true } : {}),
     ...(cli.fusedMlp ? { fusedMlp: true } : {}),
+    ...(cli.fusedRouting ? { fusedRouting: true } : {}),
   };
 
   process.stderr.write("running in WebView...\n");
@@ -260,6 +268,7 @@ const report = {
     minimumGpuRows: cli.minimumGpuRows ?? 1024,
     fusedAttention: cli.fusedAttention,
     fusedMlp: cli.fusedMlp,
+    fusedRouting: cli.fusedRouting,
   },
   results: page.results,
 };

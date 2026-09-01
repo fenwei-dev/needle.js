@@ -14,6 +14,7 @@ import {
   ATTENTION_SOFTMAX_GATE_WGSL,
   HADAMARD_MLP_DELTA_WGSL,
   KV_NORM_ROPE_STORE_WGSL,
+  POST_MHC_ROUTING_WGSL,
   PREPARE_ATTENTION_WGSL,
   QUERY_NORM_ROPE_WGSL,
   SANDWICH_PREPARE_MLP_WGSL,
@@ -49,12 +50,14 @@ interface Pipelines {
   readonly prepare: GPUComputePipeline;
   readonly sandwich: GPUComputePipeline;
   readonly mlp: GPUComputePipeline;
+  readonly routing: GPUComputePipeline;
 }
 
 export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #device: GPUDevice;
   readonly #weights: CactWeights;
   readonly #fuseMlp: boolean;
+  readonly #fuseRouting: boolean;
   readonly #codebook: GPUBuffer;
   readonly #preparedInput: GPUBuffer;
   readonly #query: GPUBuffer;
@@ -70,6 +73,11 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #afterAttention: GPUBuffer;
   readonly #mlpInput: GPUBuffer;
   readonly #delta: GPUBuffer;
+  readonly #lanesInput: GPUBuffer;
+  readonly #phiPost: GPUBuffer;
+  readonly #phiResidual: GPUBuffer;
+  readonly #routingParams: GPUBuffer;
+  readonly #nextLanes: GPUBuffer;
   readonly #staging: GPUBuffer;
   readonly #queryParams: GPUBuffer;
   readonly #kvParams: GPUBuffer;
@@ -94,17 +102,20 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   #prepareGroup: GPUBindGroup | undefined;
   #sandwichGroups = new WeakMap<CactLayer, GPUBindGroup>();
   #mlpGroups = new WeakMap<CactLayer, GPUBindGroup>();
+  #routingGroup: GPUBindGroup | undefined;
   #kvAllocation = 0;
   #sinkLength = 0;
   #enabled = false;
   #disposed = false;
 
-  constructor(device: GPUDevice, weights: CactWeights, fuseMlp: boolean) {
+  constructor(device: GPUDevice, weights: CactWeights, fuseMlp: boolean, fuseRouting: boolean) {
     this.#device = device;
     this.#weights = weights;
     this.#fuseMlp = fuseMlp;
+    this.#fuseRouting = fuseRouting;
     const geometry = weights.geometry;
     const dimensionBytes = geometry.modelDimension * 4;
+    const lanesBytes = geometry.mhcLanes * dimensionBytes;
     const keyValueBytes = geometry.numberOfKVHeads * geometry.headDimension * 4;
     this.#codebook = bufferWithData(device, "needle.attention.codebook", weights.codebook, STORAGE);
     this.#preparedInput = storageBuffer(device, "needle.attention.input", dimensionBytes, COPY_DST);
@@ -135,9 +146,19 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     this.#afterAttention = storageBuffer(device, "needle.attention.after", dimensionBytes);
     this.#mlpInput = storageBuffer(device, "needle.attention.mlp-input", dimensionBytes);
     this.#delta = storageBuffer(device, "needle.attention.delta", dimensionBytes, COPY_SRC);
+    this.#lanesInput = storageBuffer(device, "needle.attention.lanes", lanesBytes, COPY_DST);
+    this.#phiPost = storageBuffer(device, "needle.attention.phi-post", 4 * 4, COPY_DST);
+    this.#phiResidual = storageBuffer(device, "needle.attention.phi-residual", 16 * 4, COPY_DST);
+    this.#routingParams = storageBuffer(
+      device,
+      "needle.attention.routing-params",
+      23 * 4,
+      COPY_DST,
+    );
+    this.#nextLanes = storageBuffer(device, "needle.attention.next-lanes", lanesBytes, COPY_SRC);
     this.#staging = device.createBuffer({
       label: "needle.attention.readback",
-      size: dimensionBytes,
+      size: lanesBytes,
       usage: MAP_READ | COPY_DST,
     });
     this.#queryParams = storageBuffer(device, "needle.attention.query-params", 8, COPY_DST);
@@ -159,6 +180,7 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       geometry.headDimension === 64 &&
       geometry.numberOfHeads === 8 &&
       geometry.numberOfKVHeads === 4 &&
+      geometry.mhcLanes === 4 &&
       geometry.hadamardDimension === 512 &&
       geometry.kvWindow > 0 &&
       this.#weights.layers.every(
@@ -230,7 +252,8 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       "BACKEND_UNAVAILABLE",
       "KV cache is missing",
     );
-    const { layer, layerIndex, position, input, blockInput, updateInput } = request;
+    const { layer, layerIndex, position, input, blockInput, updateInput, x, phiPost, phiResidual } =
+      request;
     const geometry = this.#weights.geometry;
     const pipelines = await this.#pipelines;
     const prepared = prepareCqActivation(layer.queryProjection, input);
@@ -243,6 +266,21 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
         0,
         bufferSource(new Uint32Array([floatBits(layer.attentionGate)])),
       );
+      if (this.#fuseRouting) {
+        this.#device.queue.writeBuffer(this.#lanesInput, 0, bufferSource(x));
+        this.#device.queue.writeBuffer(this.#phiPost, 0, bufferSource(phiPost));
+        this.#device.queue.writeBuffer(this.#phiResidual, 0, bufferSource(phiResidual));
+        const routingParams = new Float32Array(23);
+        routingParams[0] = this.#weights.mhcAPost[layerIndex] ?? 0;
+        routingParams[1] = this.#weights.mhcAResidual[layerIndex] ?? 0;
+        routingParams[2] = layerIndex % 4;
+        routingParams.set(this.#weights.mhcBPost.subarray(layerIndex * 4, layerIndex * 4 + 4), 3);
+        routingParams.set(
+          this.#weights.mhcBResidual.subarray(layerIndex * 16, layerIndex * 16 + 16),
+          7,
+        );
+        this.#device.queue.writeBuffer(this.#routingParams, 0, bufferSource(routingParams));
+      }
     }
 
     const matrices = [
@@ -396,13 +434,25 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       mlpPass.end();
       readback = this.#delta;
       kind = "delta";
+
+      if (this.#fuseRouting) {
+        const routingPass = encoder.beginComputePass({ label: "needle.attention.post-mhc" });
+        routingPass.setPipeline(pipelines.routing);
+        routingPass.setBindGroup(0, this.#getRoutingGroup(pipelines.routing));
+        routingPass.dispatchWorkgroups(1);
+        routingPass.end();
+        readback = this.#nextLanes;
+        kind = "nextX";
+      }
     }
 
-    encoder.copyBufferToBuffer(readback, 0, this.#staging, 0, geometry.modelDimension * 4);
+    const readbackElements = kind === "nextX" ? 2048 : geometry.modelDimension;
+
+    encoder.copyBufferToBuffer(readback, 0, this.#staging, 0, readbackElements * 4);
     this.#device.queue.submit([encoder.finish()]);
-    await this.#staging.mapAsync(MAP_READ, 0, geometry.modelDimension * 4);
+    await this.#staging.mapAsync(MAP_READ, 0, readbackElements * 4);
     try {
-      const mapped = this.#staging.getMappedRange(0, geometry.modelDimension * 4);
+      const mapped = this.#staging.getMappedRange(0, readbackElements * 4);
       return { kind, values: new Float32Array(mapped).slice() };
     } finally {
       this.#staging.unmap();
@@ -429,6 +479,11 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       this.#afterAttention,
       this.#mlpInput,
       this.#delta,
+      this.#lanesInput,
+      this.#phiPost,
+      this.#phiResidual,
+      this.#routingParams,
+      this.#nextLanes,
       this.#staging,
       this.#queryParams,
       this.#kvParams,
@@ -666,6 +721,22 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     this.#mlpGroups.set(layer, group);
     return group;
   }
+
+  #getRoutingGroup(pipeline: GPUComputePipeline): GPUBindGroup {
+    if (this.#routingGroup) return this.#routingGroup;
+    this.#routingGroup = this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.#lanesInput } },
+        { binding: 1, resource: { buffer: this.#phiPost } },
+        { binding: 2, resource: { buffer: this.#phiResidual } },
+        { binding: 3, resource: { buffer: this.#delta } },
+        { binding: 4, resource: { buffer: this.#routingParams } },
+        { binding: 5, resource: { buffer: this.#nextLanes } },
+      ],
+    });
+    return this.#routingGroup;
+  }
 }
 
 async function createPipelines(device: GPUDevice): Promise<Pipelines> {
@@ -678,6 +749,7 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     ["prepare", PREPARE_ATTENTION_WGSL, "prepare_attention"],
     ["sandwich", SANDWICH_PREPARE_MLP_WGSL, "sandwich_prepare_mlp"],
     ["mlp", HADAMARD_MLP_DELTA_WGSL, "hadamard_mlp_delta"],
+    ["routing", POST_MHC_ROUTING_WGSL, "post_mhc_routing"],
   ] as const;
   const pipelines = await Promise.all(
     descriptors.map(async ([label, source, entryPoint]) => {
@@ -695,13 +767,13 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
         : device.createComputePipeline(descriptor);
     }),
   );
-  const [cq, query, kv, scores, attention, prepare, sandwich, mlp] = pipelines;
+  const [cq, query, kv, scores, attention, prepare, sandwich, mlp, routing] = pipelines;
   invariant(
-    cq && query && kv && scores && attention && prepare && sandwich && mlp,
+    cq && query && kv && scores && attention && prepare && sandwich && mlp && routing,
     "WEBGPU_UNAVAILABLE",
     "Attention pipeline failed",
   );
-  return { cq, query, kv, scores, attention, prepare, sandwich, mlp };
+  return { cq, query, kv, scores, attention, prepare, sandwich, mlp, routing };
 }
 
 function storageBuffer(device: GPUDevice, label: string, size: number, extraUsage = 0): GPUBuffer {

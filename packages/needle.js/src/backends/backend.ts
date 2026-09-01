@@ -21,7 +21,7 @@ export interface FusedAttentionResetOptions {
 }
 
 export interface FusedAttentionResult {
-  readonly kind: "projected" | "delta";
+  readonly kind: "projected" | "delta" | "nextX";
   readonly values: Float32Array;
 }
 
@@ -32,6 +32,9 @@ export interface FusedAttentionRequest {
   readonly input: Float32Array;
   readonly blockInput: Float32Array;
   readonly updateInput: Float32Array;
+  readonly x: Float32Array;
+  readonly phiPost: Float32Array;
+  readonly phiResidual: Float32Array;
 }
 
 /** Stateful accelerator owned and disposed by its backend. */

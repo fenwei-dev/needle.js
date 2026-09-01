@@ -37,6 +37,7 @@ const agent = await createNeedleTypeGPU({
     // minimumGpuRows: 0, // force all matvecs onto WebGPU
     // fusedAttention: true, // experimental resident int8 KV + attention
     // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
+    // fusedRouting: true, // also fuse post-mHC Sinkhorn and nextX lanes
   },
 });
 ```
@@ -101,7 +102,9 @@ The session supports the published 512-dimensional, 8-query-head/4-KV-head geome
 
 This cuts the forced-all-GPU path from about 83 host synchronization groups to about 56. `fusedMlp: true` extends the same command buffer through post-attention RMS normalization, the gated residual, pre-Hadamard normalization, two 512-point Walsh–Hadamard transforms, SiLU, and layer-delta construction.
 
-Both options are experimental. Small-context WebGPU attention is currently slower than CPU attention despite removing readbacks, and the MLP extension adds GPU work without removing another host boundary yet. They are groundwork for a fully resident layer engine where mHC routing and hidden lanes remain on GPU between layers.
+`fusedRouting: true` continues through h-post gating, the 20-iteration 4×4 log-space Sinkhorn router, four-lane mixing, and `nextX` construction. It returns all 2,048 lane values to the reference loop.
+
+All options are experimental. Small-context WebGPU attention is currently slower than CPU attention despite removing readbacks; the MLP extension adds GPU work without removing another host boundary; and routing currently uploads and reads the lane state every layer. They are groundwork for retaining hidden lanes between layers, where those transfers disappear.
 
 ## Custom backend
 

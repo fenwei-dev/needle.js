@@ -13,6 +13,7 @@ export interface BrowserBenchOptions {
   minimumGpuRows?: number;
   fusedAttention?: boolean;
   fusedMlp?: boolean;
+  fusedRouting?: boolean;
 }
 
 export interface RunSample {
@@ -52,6 +53,7 @@ async function measureBackend(
                 : { minimumGpuRows: options.minimumGpuRows }),
               ...(backend === "typegpu" && options.fusedAttention ? { fusedAttention: true } : {}),
               ...(backend === "typegpu" && options.fusedMlp ? { fusedMlp: true } : {}),
+              ...(backend === "typegpu" && options.fusedRouting ? { fusedRouting: true } : {}),
             },
     });
   } catch (error) {

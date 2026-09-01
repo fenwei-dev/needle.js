@@ -14,6 +14,7 @@ import {
   ATTENTION_SCORES_WGSL,
   ATTENTION_SOFTMAX_GATE_WGSL,
   ENGRAM_INJECT_WGSL,
+  FINAL_NORM_WGSL,
   HADAMARD_MLP_DELTA_WGSL,
   KV_NORM_ROPE_STORE_WGSL,
   MHC_PRE_WGSL,
@@ -61,6 +62,7 @@ interface Pipelines {
   readonly mhcPre: GPUComputePipeline;
   readonly engram: GPUComputePipeline;
   readonly norm512: GPUComputePipeline;
+  readonly finalNorm: GPUComputePipeline;
 }
 
 export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
@@ -96,6 +98,10 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #engramKey: GPUBuffer;
   readonly #engramValue: GPUBuffer;
   readonly #nextLanes: GPUBuffer;
+  readonly #finalNorm: GPUBuffer;
+  readonly #finalHidden: GPUBuffer;
+  readonly #preparedFinal: GPUBuffer;
+  readonly #logits: GPUBuffer;
   readonly #staging: GPUBuffer;
   readonly #queryParams: GPUBuffer;
   readonly #kvParams: GPUBuffer;
@@ -126,6 +132,8 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   #mhcPreGroup: GPUBindGroup | undefined;
   #engramGroup: GPUBindGroup | undefined;
   #prepareInputGroup: GPUBindGroup | undefined;
+  #finalNormGroup: GPUBindGroup | undefined;
+  #prepareFinalGroup: GPUBindGroup | undefined;
   #inputNormGroups = new WeakMap<CactLayer, GPUBindGroup>();
   #residentEnabled = false;
   #kvAllocation = 0;
@@ -214,16 +222,30 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       COPY_DST,
     );
     this.#nextLanes = storageBuffer(device, "needle.attention.next-lanes", lanesBytes, COPY_SRC);
+    this.#finalNorm = bufferWithData(
+      device,
+      "needle.attention.final-norm",
+      weights.finalNorm,
+      STORAGE,
+    );
+    this.#finalHidden = storageBuffer(device, "needle.attention.final-hidden", dimensionBytes);
+    this.#preparedFinal = storageBuffer(device, "needle.attention.prepared-final", dimensionBytes);
+    this.#logits = storageBuffer(
+      device,
+      "needle.attention.logits",
+      geometry.vocabularySize * 4,
+      COPY_SRC,
+    );
     this.#staging = device.createBuffer({
       label: "needle.attention.readback",
-      size: lanesBytes,
+      size: Math.max(lanesBytes, geometry.vocabularySize * 4),
       usage: MAP_READ | COPY_DST,
     });
     this.#queryParams = storageBuffer(device, "needle.attention.query-params", 8, COPY_DST);
     this.#kvParams = storageBuffer(device, "needle.attention.kv-params", 32, COPY_DST);
     this.#attentionParams = storageBuffer(device, "needle.attention.params", 32, COPY_DST);
     this.#layerParams = storageBuffer(device, "needle.attention.layer-params", 4, COPY_DST);
-    this.#projectionParams = Array.from({ length: 8 }, (_, index) =>
+    this.#projectionParams = Array.from({ length: 9 }, (_, index) =>
       storageBuffer(device, `needle.attention.projection-params.${index}`, 32, COPY_DST),
     );
     this.#pipelines = createPipelines(device);
@@ -447,6 +469,53 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     this.#encodeAttentionAndPost(encoder, layer, layerIndex, position, pipelines);
     encoder.copyBufferToBuffer(this.#nextLanes, 0, this.#lanesInput, 0, 2048 * 4);
     this.#device.queue.submit([encoder.finish()]);
+  }
+
+  async finishResidentToken(wantLogits: boolean): Promise<Float32Array | null> {
+    invariant(
+      this.#residentEnabled && !this.#disposed,
+      "BACKEND_UNAVAILABLE",
+      "Resident layers are off",
+    );
+    if (!wantLogits) return null;
+    const pipelines = await this.#pipelines;
+    const embedding = this.#weights.embedding;
+    const params = this.#projectionParams[8];
+    invariant(params, "INVALID_CACT", "Final projection parameters are missing");
+    this.#device.queue.writeBuffer(
+      params,
+      0,
+      bufferSource(matrixParameters(embedding, 0, embedding.outputSize)),
+    );
+    const encoder = this.#device.createCommandEncoder({ label: "needle.resident-token.final" });
+    const normPass = encoder.beginComputePass({ label: "needle.resident-token.final-norm" });
+    normPass.setPipeline(pipelines.finalNorm);
+    normPass.setBindGroup(0, this.#getFinalNormGroup(pipelines.finalNorm));
+    normPass.dispatchWorkgroups(1);
+    normPass.end();
+
+    const preparePass = encoder.beginComputePass({ label: "needle.resident-token.prepare-final" });
+    preparePass.setPipeline(pipelines.prepare);
+    preparePass.setBindGroup(0, this.#getPrepareFinalGroup(pipelines.prepare));
+    preparePass.dispatchWorkgroups(4);
+    preparePass.end();
+
+    const logitsPass = encoder.beginComputePass({ label: "needle.resident-token.logits" });
+    logitsPass.setPipeline(pipelines.cq);
+    logitsPass.setBindGroup(
+      0,
+      this.#projectionGroup(embedding, this.#preparedFinal, params, this.#logits, pipelines.cq),
+    );
+    logitsPass.dispatchWorkgroups(embedding.outputSize);
+    logitsPass.end();
+    encoder.copyBufferToBuffer(this.#logits, 0, this.#staging, 0, embedding.outputSize * 4);
+    this.#device.queue.submit([encoder.finish()]);
+    await this.#staging.mapAsync(MAP_READ, 0, embedding.outputSize * 4);
+    try {
+      return new Float32Array(this.#staging.getMappedRange(0, embedding.outputSize * 4)).slice();
+    } finally {
+      this.#staging.unmap();
+    }
   }
 
   async readResidentLanes(): Promise<Float32Array> {
@@ -716,6 +785,10 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       this.#engramKey,
       this.#engramValue,
       this.#nextLanes,
+      this.#finalNorm,
+      this.#finalHidden,
+      this.#preparedFinal,
+      this.#logits,
       this.#staging,
       this.#queryParams,
       this.#kvParams,
@@ -1048,6 +1121,31 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     return this.#prepareInputGroup;
   }
 
+  #getFinalNormGroup(pipeline: GPUComputePipeline): GPUBindGroup {
+    if (this.#finalNormGroup) return this.#finalNormGroup;
+    this.#finalNormGroup = this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.#lanesInput } },
+        { binding: 1, resource: { buffer: this.#finalNorm } },
+        { binding: 2, resource: { buffer: this.#finalHidden } },
+      ],
+    });
+    return this.#finalNormGroup;
+  }
+
+  #getPrepareFinalGroup(pipeline: GPUComputePipeline): GPUBindGroup {
+    if (this.#prepareFinalGroup) return this.#prepareFinalGroup;
+    this.#prepareFinalGroup = this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.#finalHidden } },
+        { binding: 1, resource: { buffer: this.#preparedFinal } },
+      ],
+    });
+    return this.#prepareFinalGroup;
+  }
+
   #queryGroup(layer: CactLayer, pipeline: GPUComputePipeline): GPUBindGroup {
     const cached = this.#queryGroups.get(layer);
     if (cached) return cached;
@@ -1213,6 +1311,7 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     ["mhc-pre", MHC_PRE_WGSL, "mhc_pre"],
     ["engram", ENGRAM_INJECT_WGSL, "engram_inject"],
     ["norm-512", RMS_NORM_512_WGSL, "rms_norm_512"],
+    ["final-norm", FINAL_NORM_WGSL, "final_norm"],
   ] as const;
   const pipelines = await Promise.all(
     descriptors.map(async ([label, source, entryPoint]) => {
@@ -1244,6 +1343,7 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     mhcPre,
     engram,
     norm512,
+    finalNorm,
   ] = pipelines;
   invariant(
     cq &&
@@ -1258,7 +1358,8 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
       rmsLanes &&
       mhcPre &&
       engram &&
-      norm512,
+      norm512 &&
+      finalNorm,
     "WEBGPU_UNAVAILABLE",
     "Attention pipeline failed",
   );
@@ -1276,6 +1377,7 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     mhcPre,
     engram,
     norm512,
+    finalNorm,
   };
 }
 

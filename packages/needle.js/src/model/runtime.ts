@@ -261,11 +261,17 @@ export class NeedleRuntime {
     const [engramKeys, engramValues] = await this.#engramStep();
     const attentionWidth = geometry.numberOfHeads * geometry.headDimension;
     const residentLayers = (await this.#fusedAttention?.beginResidentToken?.(x)) ?? false;
+    let residentLogits: Float32Array | null | undefined;
+    const usingResidentLayers = Boolean(
+      residentLayers &&
+        this.#fusedAttention?.forwardResidentLayer &&
+        this.#fusedAttention.finishResidentToken,
+    );
 
     if (
-      residentLayers &&
+      usingResidentLayers &&
       this.#fusedAttention?.forwardResidentLayer &&
-      this.#fusedAttention.readResidentLanes
+      this.#fusedAttention.finishResidentToken
     ) {
       for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
         if (options.signal?.aborted)
@@ -282,7 +288,7 @@ export class NeedleRuntime {
             : {}),
         });
       }
-      x = await this.#fusedAttention.readResidentLanes();
+      residentLogits = await this.#fusedAttention.finishResidentToken(options.wantLogits !== false);
     } else {
       for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
         if (options.signal?.aborted)
@@ -464,6 +470,10 @@ export class NeedleRuntime {
 
     this.#position++;
     if (options.wantLogits === false) return null;
+    if (usingResidentLayers) {
+      invariant(residentLogits, "BACKEND_UNAVAILABLE", "Resident logits are missing");
+      return residentLogits;
+    }
     const mean = new Float32Array(dimension);
     for (let column = 0; column < dimension; column++) {
       let sum = 0;

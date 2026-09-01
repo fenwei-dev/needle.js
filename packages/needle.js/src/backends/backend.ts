@@ -51,6 +51,7 @@ export interface FusedAttentionSession {
   forward(request: FusedAttentionRequest): Promise<FusedAttentionResult>;
   beginResidentToken?(lanes: Float32Array): Promise<boolean>;
   forwardResidentLayer?(request: ResidentLayerRequest): Promise<void>;
+  finishResidentToken?(wantLogits: boolean): Promise<Float32Array | null>;
   readResidentLanes?(): Promise<Float32Array>;
   dispose(): void;
 }

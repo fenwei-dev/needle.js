@@ -117,7 +117,7 @@ The individual fusion options are experimental. Small-context WebGPU attention i
 4. resident attention/KV, output projection, sandwich residual, and MLP;
 5. h-post, Sinkhorn routing, and `nextX`, copied into the next layer's lane buffer.
 
-After layer 27 it reads the 2,048 lane values once. This measured 51.3 tok/s on the standard forced-all-GPU workload and 5.44 tok/s at a 98-token prompt, ahead of CPU in both paired runs. It currently requires disabled confidence collection; high-level confidence-head calls automatically use the non-resident path.
+After layer 27, final lane averaging, RMSNorm, activation preparation, and vocabulary projection remain on GPU. Non-logit prefill steps do not read layer/final state at all; steps requesting logits read the 8,192 values once. This measured 51.4 tok/s on the standard forced-all-GPU workload and 5.40 tok/s at a 98-token prompt, ahead of CPU in both paired runs. It currently requires disabled confidence collection; high-level confidence-head calls automatically use the non-resident path.
 
 ## Custom backend
 

@@ -57,12 +57,12 @@ For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok
 
 `fusedRouting: true` additionally performs h-post gating, 20 log-space Sinkhorn iterations, four-lane routing, and `nextX` construction on GPU. In isolation it measured about **10.6 tok/s**, because it transfers 2,048 lane values in both directions each layer.
 
-`residentLayers: true` retains that `nextX` buffer for the next layer and adds GPU mHC pre-routing, h-pre reduction, engram injection, and input normalization. All 27 layers run without host readback; lanes are read once at the end of the token.
+`residentLayers: true` retains that `nextX` buffer for the next layer and adds GPU mHC pre-routing, h-pre reduction, engram injection, and input normalization. All 27 layers run without host readback. Final lane averaging, RMSNorm, activation preparation, and vocabulary projection also execute on GPU; non-logit prefill steps now read nothing after their layers.
 
 | Resident-layer workload | CPU | TypeGPU resident layers |
 | --- | ---: | ---: |
-| Standard prompt, 32 generated tokens | 41.5 tok/s | **51.3 tok/s** |
-| 98-token prompt, 8 generated tokens | 4.62 tok/s | **5.44 tok/s** |
+| Standard prompt, 32 generated tokens | 41.6 tok/s | **51.4 tok/s** |
+| 98-token prompt, 8 generated tokens | 4.68 tok/s | **5.40 tok/s** |
 
 The resident path matched CPU greedy text in both workloads. Confidence collection currently selects the non-resident path because the confidence pool consumes every layer's hidden mean.
 

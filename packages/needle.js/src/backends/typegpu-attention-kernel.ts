@@ -131,6 +131,41 @@ fn rms_norm_512(@builtin(local_invocation_id) local: vec3u) {
 }
 `;
 
+export const FINAL_NORM_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> lanes: array<f32>;
+@group(0) @binding(1) var<storage, read> scale: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+var<workgroup> final_values: array<f32, 512>;
+var<workgroup> final_partial: array<f32, 128>;
+
+@compute @workgroup_size(128)
+fn final_norm(@builtin(local_invocation_id) local: vec3u) {
+  var sum = 0.0;
+  for (var column = local.x; column < 512u; column += 128u) {
+    var mean = 0.0;
+    for (var lane = 0u; lane < 4u; lane++) {
+      mean = mean + lanes[lane * 512u + column];
+    }
+    mean = mean * 0.25;
+    final_values[column] = mean;
+    sum = sum + mean * mean;
+  }
+  final_partial[local.x] = sum;
+  workgroupBarrier();
+  for (var stride = 64u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      final_partial[local.x] = final_partial[local.x] + final_partial[local.x + stride];
+    }
+    workgroupBarrier();
+  }
+  let inverse = inverseSqrt(final_partial[0] / 512.0 + 1e-6);
+  for (var column = local.x; column < 512u; column += 128u) {
+    output[column] = (1.0 + scale[column]) * final_values[column] * inverse;
+  }
+}
+`;
+
 export const QUERY_NORM_ROPE_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> query: array<f32>;
 @group(0) @binding(1) var<storage, read> norm_scale: array<f32>;

@@ -202,7 +202,7 @@ Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.
 
 TypeGPU also has opt-in residency experiments. `fusedAttention` keeps Q/K/V, int8 KV state, attention, gating, and output projection on GPU; `fusedMlp` adds sandwich residuals and both 512-point Hadamard transforms; `fusedRouting` adds h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. The individual stages preserve greedy output but cost more than CPU while lane state still round-trips.
 
-`residentLayers: true` removes that round trip. It retains all 2,048 lane values, performs mHC pre-projections/gating, optional engram injection, attention, MLP, and post-routing on GPU, and reads lanes only after layer 27. Forced-all-GPU throughput measured **51.3 tok/s** on the standard prompt and 5.44 tok/s for a 98-token prompt, versus CPU's 41.5 and 4.62 tok/s in the same runs. Confidence collection currently falls back to the non-resident path.
+`residentLayers: true` removes that round trip. It retains all 2,048 lane values and performs mHC pre-projections/gating, optional engram injection, attention, MLP, and post-routing on GPU. After layer 27, final lane mean, RMSNorm, activation preparation, and the 8,192-row vocabulary projection also remain on GPU. Non-logit prefill steps have no layer/final readback; logit steps read the vocabulary once. Forced-all-GPU throughput measured **51.4 tok/s** on the standard prompt and 5.40 tok/s for a 98-token prompt, versus CPU's 41.6 and 4.68 tok/s in paired runs. Confidence collection currently falls back to the non-resident path.
 
 ## Weight sources
 

@@ -45,6 +45,28 @@ export function prepareCqActivation(matrix: CqMatrix, input: Float32Array): Floa
   return prepared;
 }
 
+export type CqActivationCache = Map<Float32Array, Map<string, Float32Array>>;
+
+/** Reuses the FWHT when a group of compatible matrices shares one input. */
+export function prepareCqActivationCached(
+  cache: CqActivationCache,
+  matrix: CqMatrix,
+  input: Float32Array,
+): Float32Array {
+  let byGeometry = cache.get(input);
+  if (!byGeometry) {
+    byGeometry = new Map();
+    cache.set(input, byGeometry);
+  }
+  const key = `${matrix.inputSize}:${matrix.inputSizePadded}:${matrix.groupSize}`;
+  let prepared = byGeometry.get(key);
+  if (!prepared) {
+    prepared = prepareCqActivation(matrix, input);
+    byGeometry.set(key, prepared);
+  }
+  return prepared;
+}
+
 interface CqLuts {
   readonly lut2: Float32Array;
   readonly lut4: Float32Array;

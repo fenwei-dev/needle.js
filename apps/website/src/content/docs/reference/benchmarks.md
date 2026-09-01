@@ -32,14 +32,22 @@ The 8,192 × 512 vocabulary projection is large enough to benefit. Its CQ shader
 
 ## Diagnostic all-GPU matvec result
 
-Setting `minimumGpuRows: 0` forces all packed matvecs through WebGPU. This is useful for backend validation, but it creates roughly 220 submission/readback boundaries per model step.
+Setting `minimumGpuRows: 0` forces all packed matvecs through WebGPU. This is useful for backend validation. The runtime batches projections that are independent at that point in the graph:
+
+- the three mHC routing projections;
+- query, key, value, and gate;
+- both engram sites' key and value projections.
+
+This reduces host synchronization from roughly 220 individual matvec boundaries to about 83 groups per model step.
 
 | Backend | Median tok/s | Median ms / 32 tokens |
 | --- | ---: | ---: |
-| TypeGPU, every matvec on WebGPU | 6.68 | 4,794 |
-| vgpu, every matvec on WebGPU | 11.33 | 2,825 |
+| TypeGPU, every matvec on WebGPU | 20.9 | 1,531 |
+| vgpu, every matvec on WebGPU | 19.4 | 1,653 |
 
-A future fully resident engine could keep hidden state, intermediate activations, and KV cache on GPU; encode dependent kernels into a small number of command buffers; and read back only selected tokens or final logits. That is the path to making the whole layer stack faster rather than merely moving each individual matvec to a GPU.
+These diagnostic medians use two warmups and five timed runs. Before batching, the same all-WebGPU paths measured 6.68 tok/s for TypeGPU and 11.33 tok/s for vgpu.
+
+A future fully resident engine could keep hidden state, intermediate activations, and KV cache on GPU; encode dependent kernels into a small number of command buffers; and read back only selected tokens or final logits. That is the path to reducing synchronization from about 83 groups to one boundary per generated token.
 
 ## Reproduce
 

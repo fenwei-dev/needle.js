@@ -2,8 +2,13 @@
 import type { Compute, Gpu, StorageBuffer } from "vgpu";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
-import type { InferenceBackend, MatrixRowRange } from "./backend.js";
-import { cqMatvecPrepared, dequantizeCqRow, prepareCqActivation } from "./cq.js";
+import type { InferenceBackend, MatrixRowRange, MatvecRequest } from "./backend.js";
+import {
+  cqMatvecPrepared,
+  dequantizeCqRow,
+  prepareCqActivation,
+  prepareCqActivationCached,
+} from "./cq.js";
 import {
   CQ_MATVEC_WGSL,
   matrixParameters,
@@ -21,6 +26,12 @@ interface VgpuModule {
 interface VgpuMatrix {
   readonly packed: StorageBuffer;
   readonly norms: StorageBuffer;
+}
+
+interface BatchRead {
+  readonly index: number;
+  readonly rowCount: number;
+  readonly bytes: Promise<ArrayBuffer>;
 }
 
 export interface VGPUBackendOptions {
@@ -49,7 +60,7 @@ export class VGPUBackend implements InferenceBackend {
   readonly #ownsGpu: boolean;
   readonly #compute: Compute;
   readonly #input: StorageBuffer;
-  readonly #output: StorageBuffer;
+  readonly #outputs = new Map<number, StorageBuffer>();
   readonly #parameters: StorageBuffer;
   readonly #codebook: StorageBuffer;
   readonly #matrixCache = new WeakMap<CqMatrix, VgpuMatrix>();
@@ -69,9 +80,7 @@ export class VGPUBackend implements InferenceBackend {
     this.#minimumGpuRows = minimumGpuRows;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
-    const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
     this.#input = module.storage(gpu, align4(maximumInput * 4), "read");
-    this.#output = module.storage(gpu, align4(maximumOutput * 4), "read-write");
     this.#parameters = module.storage(gpu, 32, "read");
     this.#codebook = module.storage(gpu, align4(weights.codebook.byteLength), "read");
     this.#codebook.write(bufferSource(weights.codebook));
@@ -127,12 +136,14 @@ export class VGPUBackend implements InferenceBackend {
       "INVALID_CACT",
       "Invalid vgpu matvec row range",
     );
+    if (rowCount === 0) return new Float32Array();
     const prepared = prepareCqActivation(matrix, input);
     // Needle's 4–512-row projections cannot amortize a WebGPU submission and
     // synchronous readback. The 8,192-row vocabulary projection can.
     if (rowCount < this.#minimumGpuRows)
       return cqMatvecPrepared(matrix, prepared, rowStart, rowCount);
     const gpuMatrix = this.#gpuMatrix(matrix);
+    const output = this.#output(rowCount);
     this.#input.write(bufferSource(prepared));
     this.#parameters.write(bufferSource(matrixParameters(matrix, rowStart, rowCount)));
     this.#compute.set({
@@ -141,11 +152,73 @@ export class VGPUBackend implements InferenceBackend {
       input: this.#input,
       codebook: this.#codebook,
       params: this.#parameters,
-      output: this.#output,
+      output,
     });
     this.#compute.dispatch(rowCount);
-    const bytes = await this.#output.read();
+    const bytes = await output.read();
     return new Float32Array(bytes, 0, rowCount);
+  }
+
+  async matvecBatch(requests: readonly MatvecRequest[]): Promise<readonly Float32Array[]> {
+    invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "vgpu backend has been disposed");
+    if (requests.length === 0) return [];
+
+    const results = new Array<Float32Array>(requests.length);
+    const preparedCache = new Map<Float32Array, Map<string, Float32Array>>();
+    const reads: BatchRead[] = [];
+    let uploadedInput: Float32Array | undefined;
+
+    for (let index = 0; index < requests.length; index++) {
+      const request = requests[index];
+      invariant(request, "INVALID_CACT", `Missing vgpu batch request ${index}`);
+      const { matrix, input, range = {} } = request;
+      const rowStart = range.rowStart ?? 0;
+      const rowCount = range.rowCount ?? matrix.outputSize - rowStart;
+      invariant(
+        rowStart >= 0 && rowCount >= 0 && rowStart + rowCount <= matrix.outputSize,
+        "INVALID_CACT",
+        "Invalid vgpu batched matvec row range",
+      );
+      if (rowCount === 0) {
+        results[index] = new Float32Array();
+        continue;
+      }
+
+      const prepared = prepareCqActivationCached(preparedCache, matrix, input);
+      if (rowCount < this.#minimumGpuRows) {
+        results[index] = cqMatvecPrepared(matrix, prepared, rowStart, rowCount);
+        continue;
+      }
+
+      const gpuMatrix = this.#gpuMatrix(matrix);
+      const output = this.#output(rowCount);
+      if (uploadedInput !== prepared) {
+        this.#input.write(bufferSource(prepared));
+        uploadedInput = prepared;
+      }
+      this.#parameters.write(bufferSource(matrixParameters(matrix, rowStart, rowCount)));
+      this.#compute.set({
+        packed: gpuMatrix.packed,
+        norms: gpuMatrix.norms,
+        input: this.#input,
+        codebook: this.#codebook,
+        params: this.#parameters,
+        output,
+      });
+      this.#compute.dispatch(rowCount);
+      // read() submits its copy before yielding. Queue ordering preserves this
+      // result even when the next request reuses the same output-size buffer.
+      reads.push({ index, rowCount, bytes: output.read() });
+    }
+
+    const buffers = await Promise.all(reads.map((read) => read.bytes));
+    for (let index = 0; index < reads.length; index++) {
+      const read = reads[index];
+      const bytes = buffers[index];
+      invariant(read && bytes, "BACKEND_UNAVAILABLE", "vgpu batch readback is missing");
+      results[read.index] = new Float32Array(bytes, 0, read.rowCount);
+    }
+    return results;
   }
 
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {
@@ -158,6 +231,15 @@ export class VGPUBackend implements InferenceBackend {
     // vgpu resources are registered with their Gpu lifetime. Dispose only a
     // context created by this backend; a supplied context remains caller-owned.
     if (this.#ownsGpu) this.gpu.dispose();
+  }
+
+  #output(rowCount: number): StorageBuffer {
+    let output = this.#outputs.get(rowCount);
+    if (!output) {
+      output = this.#module.storage(this.gpu, align4(rowCount * 4), "read-write");
+      this.#outputs.set(rowCount, output);
+    }
+    return output;
   }
 
   #gpuMatrix(matrix: CqMatrix): VgpuMatrix {

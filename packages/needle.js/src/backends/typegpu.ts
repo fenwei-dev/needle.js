@@ -2,8 +2,13 @@
 import { type TgpuRoot, tgpu } from "typegpu";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
-import type { InferenceBackend, MatrixRowRange } from "./backend.js";
-import { cqMatvecPrepared, dequantizeCqRow, prepareCqActivation } from "./cq.js";
+import type { InferenceBackend, MatrixRowRange, MatvecRequest } from "./backend.js";
+import {
+  cqMatvecPrepared,
+  dequantizeCqRow,
+  prepareCqActivation,
+  prepareCqActivationCached,
+} from "./cq.js";
 import {
   CQ_MATVEC_WGSL,
   matrixParameters,
@@ -19,7 +24,21 @@ const STORAGE = 0x0080;
 interface GpuMatrix {
   readonly packed: GPUBuffer;
   readonly norms: GPUBuffer;
-  readonly bindGroup: GPUBindGroup;
+}
+
+interface GpuSlot {
+  readonly input: GPUBuffer;
+  readonly output: GPUBuffer;
+  readonly parameters: GPUBuffer;
+  readonly bindGroups: WeakMap<CqMatrix, GPUBindGroup>;
+}
+
+interface BatchJob {
+  readonly index: number;
+  readonly rowCount: number;
+  readonly stagingOffset: number;
+  readonly slot: GpuSlot;
+  readonly matrix: GpuMatrix;
 }
 
 export interface TypeGPUBackendOptions {
@@ -45,11 +64,11 @@ export class TypeGPUBackend implements InferenceBackend {
 
   readonly #ownsRoot: boolean;
   readonly #pipeline: GPUComputePipeline;
-  readonly #input: GPUBuffer;
-  readonly #output: GPUBuffer;
-  readonly #parameters: GPUBuffer;
   readonly #codebook: GPUBuffer;
   readonly #staging: GPUBuffer;
+  readonly #maximumInputBytes: number;
+  readonly #maximumOutputBytes: number;
+  readonly #slots: GpuSlot[] = [];
   readonly #matrixCache = new WeakMap<CqMatrix, GpuMatrix>();
   readonly #allocatedMatrices: GpuMatrix[] = [];
   readonly #minimumGpuRows: number;
@@ -70,21 +89,8 @@ export class TypeGPUBackend implements InferenceBackend {
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
-    this.#input = this.device.createBuffer({
-      label: "needle.typegpu.input",
-      size: align4(maximumInput * 4),
-      usage: STORAGE | COPY_DST,
-    });
-    this.#output = this.device.createBuffer({
-      label: "needle.typegpu.output",
-      size: align4(maximumOutput * 4),
-      usage: STORAGE | COPY_SRC,
-    });
-    this.#parameters = this.device.createBuffer({
-      label: "needle.typegpu.parameters",
-      size: 32,
-      usage: STORAGE | COPY_DST,
-    });
+    this.#maximumInputBytes = align4(maximumInput * 4);
+    this.#maximumOutputBytes = align4(maximumOutput * 4);
     this.#codebook = bufferWithData(
       this.device,
       "needle.typegpu.codebook",
@@ -93,9 +99,10 @@ export class TypeGPUBackend implements InferenceBackend {
     );
     this.#staging = this.device.createBuffer({
       label: "needle.typegpu.readback",
-      size: align4(maximumOutput * 4),
+      size: this.#maximumOutputBytes,
       usage: MAP_READ | COPY_DST,
     });
+    this.#slots.push(this.#createSlot(0));
   }
 
   static async create(
@@ -155,6 +162,7 @@ export class TypeGPUBackend implements InferenceBackend {
       "INVALID_CACT",
       "Invalid TypeGPU matvec row range",
     );
+    if (rowCount === 0) return new Float32Array();
     const prepared = prepareCqActivation(matrix, input);
     // Needle's 4–512-row projections cannot amortize a WebGPU submission and
     // synchronous readback. The 8,192-row vocabulary projection can.
@@ -162,16 +170,17 @@ export class TypeGPUBackend implements InferenceBackend {
       return cqMatvecPrepared(matrix, prepared, rowStart, rowCount);
     const gpuMatrix = this.#gpuMatrix(matrix);
     const parameters = matrixParameters(matrix, rowStart, rowCount);
-    this.device.queue.writeBuffer(this.#input, 0, bufferSource(prepared));
-    this.device.queue.writeBuffer(this.#parameters, 0, bufferSource(parameters));
+    const slot = this.#slot(0);
+    this.device.queue.writeBuffer(slot.input, 0, bufferSource(prepared));
+    this.device.queue.writeBuffer(slot.parameters, 0, bufferSource(parameters));
 
     const encoder = this.device.createCommandEncoder({ label: "needle.typegpu.cq-matvec.encoder" });
     const pass = encoder.beginComputePass({ label: "needle.typegpu.cq-matvec.pass" });
     pass.setPipeline(this.#pipeline);
-    pass.setBindGroup(0, gpuMatrix.bindGroup);
+    pass.setBindGroup(0, this.#bindGroup(matrix, gpuMatrix, slot));
     pass.dispatchWorkgroups(rowCount);
     pass.end();
-    encoder.copyBufferToBuffer(this.#output, 0, this.#staging, 0, align4(rowCount * 4));
+    encoder.copyBufferToBuffer(slot.output, 0, this.#staging, 0, align4(rowCount * 4));
     this.device.queue.submit([encoder.finish()]);
     await this.#staging.mapAsync(MAP_READ, 0, align4(rowCount * 4));
     const mapped = this.#staging.getMappedRange(0, align4(rowCount * 4));
@@ -181,6 +190,106 @@ export class TypeGPUBackend implements InferenceBackend {
     return result;
   }
 
+  async matvecBatch(requests: readonly MatvecRequest[]): Promise<readonly Float32Array[]> {
+    invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "TypeGPU backend has been disposed");
+    if (requests.length === 0) return [];
+
+    const results = new Array<Float32Array>(requests.length);
+    const preparedCache = new Map<Float32Array, Map<string, Float32Array>>();
+    const jobs: BatchJob[] = [];
+    let stagingBytes = 0;
+
+    for (let index = 0; index < requests.length; index++) {
+      const request = requests[index];
+      invariant(request, "INVALID_CACT", `Missing TypeGPU batch request ${index}`);
+      const { matrix, input, range = {} } = request;
+      const rowStart = range.rowStart ?? 0;
+      const rowCount = range.rowCount ?? matrix.outputSize - rowStart;
+      invariant(
+        rowStart >= 0 && rowCount >= 0 && rowStart + rowCount <= matrix.outputSize,
+        "INVALID_CACT",
+        "Invalid TypeGPU batched matvec row range",
+      );
+      if (rowCount === 0) {
+        results[index] = new Float32Array();
+        continue;
+      }
+
+      const prepared = prepareCqActivationCached(preparedCache, matrix, input);
+      if (rowCount < this.#minimumGpuRows) {
+        results[index] = cqMatvecPrepared(matrix, prepared, rowStart, rowCount);
+        continue;
+      }
+
+      const slot = this.#slot(jobs.length);
+      this.device.queue.writeBuffer(slot.input, 0, bufferSource(prepared));
+      this.device.queue.writeBuffer(
+        slot.parameters,
+        0,
+        bufferSource(matrixParameters(matrix, rowStart, rowCount)),
+      );
+      jobs.push({
+        index,
+        rowCount,
+        stagingOffset: stagingBytes,
+        slot,
+        matrix: this.#gpuMatrix(matrix),
+      });
+      stagingBytes += align4(rowCount * 4);
+    }
+
+    if (jobs.length === 0) return results;
+    const temporaryStaging = stagingBytes > this.#maximumOutputBytes;
+    const staging = temporaryStaging
+      ? this.device.createBuffer({
+          label: "needle.typegpu.batch-readback",
+          size: stagingBytes,
+          usage: MAP_READ | COPY_DST,
+        })
+      : this.#staging;
+
+    try {
+      const encoder = this.device.createCommandEncoder({
+        label: "needle.typegpu.cq-matvec-batch.encoder",
+      });
+      const pass = encoder.beginComputePass({
+        label: "needle.typegpu.cq-matvec-batch.pass",
+      });
+      pass.setPipeline(this.#pipeline);
+      for (const job of jobs) {
+        const request = requests[job.index];
+        invariant(request, "INVALID_CACT", `Missing TypeGPU batch request ${job.index}`);
+        pass.setBindGroup(0, this.#bindGroup(request.matrix, job.matrix, job.slot));
+        pass.dispatchWorkgroups(job.rowCount);
+      }
+      pass.end();
+      for (const job of jobs) {
+        encoder.copyBufferToBuffer(
+          job.slot.output,
+          0,
+          staging,
+          job.stagingOffset,
+          align4(job.rowCount * 4),
+        );
+      }
+      this.device.queue.submit([encoder.finish()]);
+      await staging.mapAsync(MAP_READ, 0, stagingBytes);
+      try {
+        const mapped = staging.getMappedRange(0, stagingBytes);
+        for (const job of jobs) {
+          const result = new Float32Array(job.rowCount);
+          result.set(new Float32Array(mapped, job.stagingOffset, job.rowCount));
+          results[job.index] = result;
+        }
+      } finally {
+        staging.unmap();
+      }
+      return results;
+    } finally {
+      if (temporaryStaging) staging.destroy();
+    }
+  }
+
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {
     return dequantizeCqRow(matrix, row, output);
   }
@@ -188,9 +297,11 @@ export class TypeGPUBackend implements InferenceBackend {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#input.destroy();
-    this.#output.destroy();
-    this.#parameters.destroy();
+    for (const slot of this.#slots) {
+      slot.input.destroy();
+      slot.output.destroy();
+      slot.parameters.destroy();
+    }
     this.#codebook.destroy();
     this.#staging.destroy();
     for (const matrix of this.#allocatedMatrices) {
@@ -216,22 +327,59 @@ export class TypeGPUBackend implements InferenceBackend {
       data.norms,
       STORAGE | COPY_DST,
     );
+    const result = { packed, norms };
+    this.#matrixCache.set(matrix, result);
+    this.#allocatedMatrices.push(result);
+    return result;
+  }
+
+  #slot(index: number): GpuSlot {
+    let slot = this.#slots[index];
+    if (!slot) {
+      slot = this.#createSlot(index);
+      this.#slots[index] = slot;
+    }
+    return slot;
+  }
+
+  #createSlot(index: number): GpuSlot {
+    return {
+      input: this.device.createBuffer({
+        label: `needle.typegpu.input.${index}`,
+        size: this.#maximumInputBytes,
+        usage: STORAGE | COPY_DST,
+      }),
+      output: this.device.createBuffer({
+        label: `needle.typegpu.output.${index}`,
+        size: this.#maximumOutputBytes,
+        usage: STORAGE | COPY_SRC,
+      }),
+      parameters: this.device.createBuffer({
+        label: `needle.typegpu.parameters.${index}`,
+        size: 32,
+        usage: STORAGE | COPY_DST,
+      }),
+      bindGroups: new WeakMap(),
+    };
+  }
+
+  #bindGroup(matrix: CqMatrix, gpuMatrix: GpuMatrix, slot: GpuSlot): GPUBindGroup {
+    const cached = slot.bindGroups.get(matrix);
+    if (cached) return cached;
     const bindGroup = this.device.createBindGroup({
       label: `needle.typegpu.matrix.${matrix.record.index}.bind-group`,
       layout: this.#pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: packed } },
-        { binding: 1, resource: { buffer: norms } },
-        { binding: 2, resource: { buffer: this.#input } },
+        { binding: 0, resource: { buffer: gpuMatrix.packed } },
+        { binding: 1, resource: { buffer: gpuMatrix.norms } },
+        { binding: 2, resource: { buffer: slot.input } },
         { binding: 3, resource: { buffer: this.#codebook } },
-        { binding: 4, resource: { buffer: this.#parameters } },
-        { binding: 5, resource: { buffer: this.#output } },
+        { binding: 4, resource: { buffer: slot.parameters } },
+        { binding: 5, resource: { buffer: slot.output } },
       ],
     });
-    const result = { packed, norms, bindGroup };
-    this.#matrixCache.set(matrix, result);
-    this.#allocatedMatrices.push(result);
-    return result;
+    slot.bindGroups.set(matrix, bindGroup);
+    return bindGroup;
   }
 }
 

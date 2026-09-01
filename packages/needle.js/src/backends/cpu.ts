@@ -1,6 +1,6 @@
 import type { CactWeights, CqMatrix } from "../model/cact.js";
-import type { InferenceBackend, MatrixRowRange } from "./backend.js";
-import { cqMatvec, dequantizeCqRow } from "./cq.js";
+import type { InferenceBackend, MatrixRowRange, MatvecRequest } from "./backend.js";
+import { cqMatvec, cqMatvecPrepared, dequantizeCqRow, prepareCqActivationCached } from "./cq.js";
 
 /** Portable, dependency-free TypeScript backend. */
 export class CpuBackend implements InferenceBackend {
@@ -13,6 +13,16 @@ export class CpuBackend implements InferenceBackend {
     const rowStart = range.rowStart ?? 0;
     const rowCount = range.rowCount ?? matrix.outputSize - rowStart;
     return cqMatvec(matrix, input, rowStart, rowCount);
+  }
+
+  matvecBatch(requests: readonly MatvecRequest[]): readonly Float32Array[] {
+    const prepared = new Map<Float32Array, Map<string, Float32Array>>();
+    return requests.map(({ matrix, input, range = {} }) => {
+      const rowStart = range.rowStart ?? 0;
+      const rowCount = range.rowCount ?? matrix.outputSize - rowStart;
+      const activation = prepareCqActivationCached(prepared, matrix, input);
+      return cqMatvecPrepared(matrix, activation, rowStart, rowCount);
+    });
   }
 
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {

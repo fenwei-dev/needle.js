@@ -85,7 +85,7 @@ In a browser with WebGPU, `auto` tries TypeGPU and then vgpu. Otherwise it uses 
 
 ## Hybrid GPU execution
 
-The GPU backends accelerate packed CQ matrix–vector operators. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent GPU operators.
+The GPU backends accelerate packed CQ matrix–vector operators. Independent mHC projections, Q/K/V/gate projections, and engram key/value projections use `matvecBatch()` so each group has one host synchronization. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent groups.
 
 A matvec with only 4–512 output rows is too small to amortize submission and synchronous readback in this architecture. Both backends therefore default `minimumGpuRows` to `1024`; smaller projections use the optimized TypeScript CQ kernel and the official model's 8,192-row vocabulary projection uses WebGPU. Set `minimumGpuRows: 0` to force every CQ matvec onto the GPU for diagnostics.
 
@@ -96,6 +96,12 @@ This adaptive split slightly beats pure TypeScript on the measured Apple WebKit 
 Implement `InferenceBackend`:
 
 ```ts
+interface MatvecRequest {
+  matrix: CqMatrix;
+  input: Float32Array;
+  range?: { rowStart?: number; rowCount?: number };
+}
+
 interface InferenceBackend {
   kind: "cpu" | "typegpu" | "vgpu";
   weights: CactWeights;
@@ -104,6 +110,9 @@ interface InferenceBackend {
     input: Float32Array,
     range?: { rowStart?: number; rowCount?: number },
   ): Float32Array | Promise<Float32Array>;
+  matvecBatch?(
+    requests: readonly MatvecRequest[],
+  ): readonly Float32Array[] | Promise<readonly Float32Array[]>;
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array;
   dispose(): void | Promise<void>;
 }

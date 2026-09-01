@@ -52,7 +52,15 @@ describe("optional GPU backends", () => {
     });
     try {
       expect(backend.kind).toBe("typegpu");
-      expect(await backend.matvec(matrix, new Float32Array(8))).toHaveLength(1);
+      const input = new Float32Array(8);
+      expect(await backend.matvec(matrix, input)).toHaveLength(1);
+      const batch = await backend.matvecBatch([
+        { matrix, input },
+        { matrix, input },
+      ]);
+      expect(batch).toHaveLength(2);
+      expect(batch[0]).toHaveLength(1);
+      expect(batch[1]).toHaveLength(1);
     } finally {
       backend.dispose();
       mock.dispose();
@@ -69,7 +77,15 @@ describe("optional GPU backends", () => {
     });
     try {
       expect(backend.kind).toBe("vgpu");
-      expect(await backend.matvec(matrix, new Float32Array(8))).toHaveLength(1);
+      const input = new Float32Array(8);
+      expect(await backend.matvec(matrix, input)).toHaveLength(1);
+      const batch = await backend.matvecBatch([
+        { matrix, input },
+        { matrix, input },
+      ]);
+      expect(batch).toHaveLength(2);
+      expect(batch[0]).toHaveLength(1);
+      expect(batch[1]).toHaveLength(1);
     } finally {
       backend.dispose();
       mock.dispose();

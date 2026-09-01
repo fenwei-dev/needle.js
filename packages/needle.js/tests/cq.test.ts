@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { CpuBackend } from "../src/backends/cpu.js";
 import { cqMatvec, dequantizeCqRow, fastWalshHadamard } from "../src/backends/cq.js";
-import type { CactTensorRecord, CqMatrix } from "../src/model/cact.js";
+import type { CactTensorRecord, CactWeights, CqMatrix } from "../src/model/cact.js";
 import { CactDType } from "../src/model/cact.js";
 import { numberToFloat16 } from "../src/model/fp16.js";
 
@@ -68,6 +69,18 @@ describe("Cactus Quants kernels", () => {
     for (let index = 0; index < values.length; index++) {
       expect(values[index]).toBeCloseTo((original[index] ?? 0) * values.length, 5);
     }
+  });
+
+  test("batches compatible projections without changing their output", () => {
+    const current = matrix(2);
+    const input = Float32Array.from({ length: 8 }, (_, index) => Math.cos(index + 0.5));
+    const backend = new CpuBackend({} as CactWeights);
+    const output = backend.matvecBatch([
+      { matrix: current, input },
+      { matrix: current, input, range: { rowStart: 1, rowCount: 1 } },
+    ]);
+    expect(output[0]).toEqual(cqMatvec(current, input));
+    expect(output[1]).toEqual(cqMatvec(current, input, 1, 1));
   });
 
   for (const bits of [2, 3, 4, 5] as const) {

@@ -1,4 +1,4 @@
-import type { InferenceBackend } from "../backends/backend.js";
+import type { InferenceBackend, MatvecRequest } from "../backends/backend.js";
 import { denseMatvec } from "../backends/cq.js";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactProbeHead, CactWeights } from "./cact.js";
@@ -248,18 +248,23 @@ export class NeedleRuntime {
       invariant(layer !== undefined, "INVALID_CACT", `Missing layer ${layerIndex}`);
 
       const normalizedLanes = rmsUnit(x);
-      const phiPre = await this.backend.matvec(this.weights.mhcPhiPre, normalizedLanes, {
-        rowStart: layerIndex * lanes,
-        rowCount: lanes,
-      });
-      const phiPost = await this.backend.matvec(this.weights.mhcPhiPost, normalizedLanes, {
-        rowStart: layerIndex * lanes,
-        rowCount: lanes,
-      });
-      const phiResidual = await this.backend.matvec(this.weights.mhcPhiResidual, normalizedLanes, {
-        rowStart: layerIndex * lanes * lanes,
-        rowCount: lanes * lanes,
-      });
+      const [phiPre, phiPost, phiResidual] = await this.#matvecBatch([
+        {
+          matrix: this.weights.mhcPhiPre,
+          input: normalizedLanes,
+          range: { rowStart: layerIndex * lanes, rowCount: lanes },
+        },
+        {
+          matrix: this.weights.mhcPhiPost,
+          input: normalizedLanes,
+          range: { rowStart: layerIndex * lanes, rowCount: lanes },
+        },
+        {
+          matrix: this.weights.mhcPhiResidual,
+          input: normalizedLanes,
+          range: { rowStart: layerIndex * lanes * lanes, rowCount: lanes * lanes },
+        },
+      ] as const);
 
       const hPre = new Float32Array(lanes);
       const ownLane = layerIndex % lanes;
@@ -299,9 +304,12 @@ export class NeedleRuntime {
 
       // Sandwich-normalized GQA attention.
       const attentionInput = rmsNorm(blockInput, layer.normInput);
-      const query = await this.backend.matvec(layer.queryProjection, attentionInput);
-      const key = await this.backend.matvec(layer.keyProjection, attentionInput);
-      const value = await this.backend.matvec(layer.valueProjection, attentionInput);
+      const [query, key, value, gate] = await this.#matvecBatch([
+        { matrix: layer.queryProjection, input: attentionInput },
+        { matrix: layer.keyProjection, input: attentionInput },
+        { matrix: layer.valueProjection, input: attentionInput },
+        { matrix: layer.gateProjection, input: attentionInput },
+      ] as const);
       for (let head = 0; head < geometry.numberOfHeads; head++) {
         this.#rmsNormSlice(
           query,
@@ -334,7 +342,6 @@ export class NeedleRuntime {
       );
       this.#storeKV(layerIndex, position, key, value);
       const attentionOutput = this.#attention(layerIndex, position, query);
-      const gate = await this.backend.matvec(layer.gateProjection, attentionInput);
       for (let index = 0; index < attentionWidth; index++)
         attentionOutput[index] = (attentionOutput[index] ?? 0) * sigmoid(gate[index] ?? 0);
       const projected = await this.backend.matvec(layer.outputProjection, attentionOutput);
@@ -407,6 +414,27 @@ export class NeedleRuntime {
     }
     const final = rmsNorm(mean, this.weights.finalNorm);
     return this.backend.matvec(this.weights.embedding, final);
+  }
+
+  async #matvecBatch<const Requests extends readonly MatvecRequest[]>(
+    requests: Requests,
+  ): Promise<{ [Index in keyof Requests]: Float32Array }> {
+    let outputs: readonly Float32Array[];
+    if (this.backend.matvecBatch) {
+      outputs = await this.backend.matvecBatch(requests);
+    } else {
+      const sequential: Float32Array[] = [];
+      for (const request of requests) {
+        sequential.push(await this.backend.matvec(request.matrix, request.input, request.range));
+      }
+      outputs = sequential;
+    }
+    invariant(
+      outputs.length === requests.length,
+      "BACKEND_UNAVAILABLE",
+      `Backend returned ${outputs.length} results for ${requests.length} matvecs`,
+    );
+    return outputs as { [Index in keyof Requests]: Float32Array };
   }
 
   confidence(): number | undefined {
@@ -584,9 +612,7 @@ export class NeedleRuntime {
       }
     }
 
-    const keys: Float32Array[] = [];
-    const values: Float32Array[] = [];
-    const maximumOrder = Math.max(...geometry.engramOrders);
+    const projectionRequests: MatvecRequest[] = [];
     for (let siteIndex = 0; siteIndex < this.weights.engrams.length; siteIndex++) {
       const site = this.weights.engrams[siteIndex];
       invariant(site, "INVALID_CACT", `Missing engram site ${siteIndex}`);
@@ -599,8 +625,21 @@ export class NeedleRuntime {
           concatenated.set(this.backend.row(site.tables, row), table * geometry.engramSubDimension);
         }
       }
-      const key = await this.backend.matvec(site.keyProjection, concatenated);
-      const valueNow = await this.backend.matvec(site.valueProjection, concatenated);
+      projectionRequests.push(
+        { matrix: site.keyProjection, input: concatenated },
+        { matrix: site.valueProjection, input: concatenated },
+      );
+    }
+
+    const projected = await this.#matvecBatch(projectionRequests);
+    const keys: Float32Array[] = [];
+    const values: Float32Array[] = [];
+    const maximumOrder = Math.max(...geometry.engramOrders);
+    for (let siteIndex = 0; siteIndex < this.weights.engrams.length; siteIndex++) {
+      const site = this.weights.engrams[siteIndex];
+      const key = projected[siteIndex * 2];
+      const valueNow = projected[siteIndex * 2 + 1];
+      invariant(site && key && valueNow, "INVALID_CACT", `Missing engram site ${siteIndex}`);
       keys.push(key);
 
       const slot = this.#engramPosition % this.#engramDepth;

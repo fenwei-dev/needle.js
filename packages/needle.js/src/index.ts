@@ -2,6 +2,7 @@ export type {
   BackendKind,
   InferenceBackend,
   MatrixRowRange,
+  MatvecRequest,
 } from "./backends/backend.js";
 export { NeedleError, type NeedleErrorCode } from "./errors.js";
 export {

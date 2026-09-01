@@ -2,6 +2,7 @@
 import { type TgpuRoot, tgpu } from "typegpu";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
+import { WebGpuResidentSession } from "../resident/session.js";
 import type {
   FusedAttentionSession,
   InferenceBackend,
@@ -14,7 +15,6 @@ import {
   prepareCqActivation,
   prepareCqActivationCached,
 } from "./cq.js";
-import { TypeGPUFusedAttentionSession } from "./typegpu-attention.js";
 import {
   batchMatrixParameters,
   CQ_MATVEC_WGSL,
@@ -111,7 +111,7 @@ export class TypeGPUBackend implements InferenceBackend {
   readonly #fusedRoutingEnabled: boolean;
   readonly #residentLayersEnabled: boolean;
   readonly #singleTokenSubmission: boolean;
-  #fusedAttentionSession: TypeGPUFusedAttentionSession | undefined;
+  #fusedAttentionSession: WebGpuResidentSession | undefined;
   #batchPipeline: GPUComputePipeline | undefined;
   #batchPipelinePromise: Promise<GPUComputePipeline> | undefined;
   #disposed = false;
@@ -357,14 +357,12 @@ export class TypeGPUBackend implements InferenceBackend {
     invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "TypeGPU backend has been disposed");
     if (!this.#fusedAttentionEnabled) return undefined;
     if (!this.#fusedAttentionSession) {
-      this.#fusedAttentionSession = new TypeGPUFusedAttentionSession(
-        this.device,
-        this.weights,
-        this.#fusedMlpEnabled,
-        this.#fusedRoutingEnabled,
-        this.#residentLayersEnabled,
-        this.#singleTokenSubmission,
-      );
+      this.#fusedAttentionSession = new WebGpuResidentSession(this.device, this.weights, {
+        fuseMlp: this.#fusedMlpEnabled,
+        fuseRouting: this.#fusedRoutingEnabled,
+        residentLayers: this.#residentLayersEnabled,
+        singleTokenSubmission: this.#singleTokenSubmission,
+      });
     }
     return this.#fusedAttentionSession;
   }

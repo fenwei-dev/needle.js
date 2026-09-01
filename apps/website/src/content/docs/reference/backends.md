@@ -128,6 +128,26 @@ interface InferenceBackend {
 
 The interface is the seam used by all bundled implementations and a starting point for experimenting with WASM, WebNN, SIMD, or a fused WebGPU runtime.
 
+## Resident engine architecture
+
+The resident implementation no longer lives inside the TypeGPU adapter. It is organized as a raw-WebGPU core:
+
+```text
+src/resident/
+  session.ts        # model state and execution lifecycle
+  pipelines.ts      # shader-module and pipeline compilation
+  kernels.ts        # WGSL kernels
+  confidence.ts     # online confidence pooling/head
+  selection.ts      # allowed-token argmax and log-softmax
+  compatibility.ts  # geometry/KV feature gates
+  webgpu.ts         # raw buffer and upload helpers
+
+src/backends/typegpu.ts
+  # TypeGPU root/device acquisition, lifecycle, adaptive operators
+```
+
+`WebGpuResidentSession` depends only on `GPUDevice`, parsed model weights, and neutral resident options. TypeGPU is the supported public integration, but model execution is not coupled to TypeGPU-specific resource wrappers or shader authoring APIs.
+
 ## Browser correctness suite
 
 Run `bun run --cwd packages/needle.js test:browser` to validate the resident TypeGPU path with real weights in Bun.WebView. It covers greedy and constrained decoding, confidence, long sliding-window attention with prefix sinks, resets, fallback, and cancellation. Set `RESIDENT_WEBVIEW_BACKEND=chrome` to exercise Bun's Chrome backend on a machine where headless WebGPU is enabled.

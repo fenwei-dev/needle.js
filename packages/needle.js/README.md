@@ -345,6 +345,8 @@ NEEDLE_MODEL_PATH=/path/to/needle2.cact bun test tests/model.integration.test.ts
 
 The fixture checks the published 8,192-token/27-layer geometry and an exact constrained flashlight call.
 
+The resident engine is library-neutral internally: `src/resident/session.ts` accepts a raw `GPUDevice`, while `resident/pipelines.ts`, `kernels.ts`, `confidence.ts`, `selection.ts`, `compatibility.ts`, and `webgpu.ts` own the execution core. `backends/typegpu.ts` is the thin public adapter responsible for TypeGPU device acquisition, lifecycle, and the adaptive operator fallback.
+
 `test:browser` bundles a real-browser suite and drives it through `Bun.WebView`. On macOS it uses WKWebView/WebGPU and verifies resident greedy text, confidence tolerance, constrained tool selection, KV-window wraparound with prefix sinks, repeated resets, float32-KV fallback, and cancellation. Without `NEEDLE_MODEL_PATH`, it downloads and caches the pinned model.
 
 ## Attribution and licenses

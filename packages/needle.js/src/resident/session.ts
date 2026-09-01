@@ -1,7 +1,5 @@
 /// <reference types="@webgpu/types" preserve="true" />
 
-import { invariant } from "../errors.js";
-import type { CactLayer, CactWeights, CqMatrix } from "../model/cact.js";
 import type {
   FusedAttentionRequest,
   FusedAttentionResetOptions,
@@ -11,34 +9,25 @@ import type {
   ResidentLayerRequest,
   ResidentTokenRequest,
   ResidentTokenSelection,
-} from "./backend.js";
-import { prepareCqActivation } from "./cq.js";
+} from "../backends/backend.js";
+import { prepareCqActivation } from "../backends/cq.js";
+import { matrixParameters, webGpuMatrixData } from "../backends/webgpu-kernel.js";
+import { invariant } from "../errors.js";
+import type { CactLayer, CactWeights, CqMatrix } from "../model/cact.js";
+import { supportsResidentExecution } from "./compatibility.js";
+import { ResidentConfidence } from "./confidence.js";
+import { createResidentPipelines, type ResidentPipelines as Pipelines } from "./pipelines.js";
+import { ResidentTokenSelector } from "./selection.js";
 import {
-  ATTENTION_SCORES_WGSL,
-  ATTENTION_SOFTMAX_GATE_WGSL,
-  CONFIDENCE_HEAD_WGSL,
-  CONFIDENCE_POOL_WGSL,
-  ENGRAM_CONVOLVE_WGSL,
-  ENGRAM_GATHER_WGSL,
-  ENGRAM_INJECT_WGSL,
-  FINAL_NORM_WGSL,
-  HADAMARD_MLP_DELTA_WGSL,
-  KV_NORM_ROPE_STORE_WGSL,
-  MHC_PRE_WGSL,
-  POST_MHC_ROUTING_WGSL,
-  PREPARE_ATTENTION_WGSL,
-  QUERY_NORM_ROPE_WGSL,
-  RMS_LANES_WGSL,
-  RMS_NORM_512_WGSL,
-  SANDWICH_PREPARE_MLP_WGSL,
-  SELECT_TOKEN_WGSL,
-} from "./typegpu-attention-kernel.js";
-import { CQ_MATVEC_WGSL, matrixParameters, webGpuMatrixData } from "./webgpu-kernel.js";
-
-const MAP_READ = 0x0001;
-const COPY_SRC = 0x0004;
-const COPY_DST = 0x0008;
-const STORAGE = 0x0080;
+  bufferSource,
+  bufferWithData,
+  COPY_DST,
+  COPY_SRC,
+  floatBits,
+  MAP_READ,
+  STORAGE,
+  storageBuffer,
+} from "./webgpu.js";
 
 interface GpuMatrix {
   readonly packed: GPUBuffer;
@@ -87,29 +76,14 @@ interface ResidentLayerSlot {
   readonly engramGroup?: GPUBindGroup;
 }
 
-interface Pipelines {
-  readonly cq: GPUComputePipeline;
-  readonly query: GPUComputePipeline;
-  readonly kv: GPUComputePipeline;
-  readonly scores: GPUComputePipeline;
-  readonly attention: GPUComputePipeline;
-  readonly prepare: GPUComputePipeline;
-  readonly sandwich: GPUComputePipeline;
-  readonly mlp: GPUComputePipeline;
-  readonly routing: GPUComputePipeline;
-  readonly rmsLanes: GPUComputePipeline;
-  readonly mhcPre: GPUComputePipeline;
-  readonly engram: GPUComputePipeline;
-  readonly engramGather: GPUComputePipeline;
-  readonly engramConvolve: GPUComputePipeline;
-  readonly norm512: GPUComputePipeline;
-  readonly finalNorm: GPUComputePipeline;
-  readonly confidencePool: GPUComputePipeline;
-  readonly confidenceHead: GPUComputePipeline;
-  readonly selectToken: GPUComputePipeline;
+export interface WebGpuResidentOptions {
+  readonly fuseMlp: boolean;
+  readonly fuseRouting: boolean;
+  readonly residentLayers: boolean;
+  readonly singleTokenSubmission: boolean;
 }
 
-export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
+export class WebGpuResidentSession implements FusedAttentionSession {
   readonly #device: GPUDevice;
   readonly #weights: CactWeights;
   readonly #fuseMlp: boolean;
@@ -158,16 +132,8 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #finalHidden: GPUBuffer;
   readonly #preparedFinal: GPUBuffer;
   readonly #logits: GPUBuffer;
-  readonly #confidenceProbes: GPUBuffer | undefined;
-  readonly #confidenceProjection: GPUBuffer | undefined;
-  readonly #confidenceBias: GPUBuffer | undefined;
-  readonly #confidenceMaxima: GPUBuffer | undefined;
-  readonly #confidenceDenominators: GPUBuffer | undefined;
-  readonly #confidenceWeighted: GPUBuffer | undefined;
-  readonly #confidenceResult: GPUBuffer | undefined;
-  readonly #allowedTokens: GPUBuffer;
-  readonly #selectionParams: GPUBuffer;
-  readonly #selectionResult: GPUBuffer;
+  readonly #confidence: ResidentConfidence;
+  readonly #selector: ResidentTokenSelector;
   readonly #staging: GPUBuffer;
   readonly #queryParams: GPUBuffer;
   readonly #kvParams: GPUBuffer;
@@ -203,10 +169,6 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   #prepareInputGroup: GPUBindGroup | undefined;
   #finalNormGroup: GPUBindGroup | undefined;
   #prepareFinalGroup: GPUBindGroup | undefined;
-  #confidenceInputGroup: GPUBindGroup | undefined;
-  #confidenceNextGroup: GPUBindGroup | undefined;
-  #confidenceHeadGroup: GPUBindGroup | undefined;
-  #selectionGroup: GPUBindGroup | undefined;
   #inputNormGroups = new WeakMap<CactLayer, GPUBindGroup>();
   #residentSlots: ResidentLayerSlot[] = [];
   #residentSlotBuffers: GPUBuffer[] = [];
@@ -218,20 +180,13 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   #enabled = false;
   #disposed = false;
 
-  constructor(
-    device: GPUDevice,
-    weights: CactWeights,
-    fuseMlp: boolean,
-    fuseRouting: boolean,
-    residentLayers: boolean,
-    singleTokenSubmission: boolean,
-  ) {
+  constructor(device: GPUDevice, weights: CactWeights, options: WebGpuResidentOptions) {
     this.#device = device;
     this.#weights = weights;
-    this.#fuseMlp = fuseMlp;
-    this.#fuseRouting = fuseRouting;
-    this.#residentLayers = residentLayers;
-    this.#singleTokenSubmission = singleTokenSubmission;
+    this.#fuseMlp = options.fuseMlp;
+    this.#fuseRouting = options.fuseRouting;
+    this.#residentLayers = options.residentLayers;
+    this.#singleTokenSubmission = options.singleTokenSubmission;
     const geometry = weights.geometry;
     const dimensionBytes = geometry.modelDimension * 4;
     const lanesBytes = geometry.mhcLanes * dimensionBytes;
@@ -373,41 +328,8 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       geometry.vocabularySize * 4,
       COPY_SRC,
     );
-    const confidence = weights.heads.get("confidence");
-    const supportedConfidence =
-      confidence?.probeCount === 8 &&
-      confidence.outputSize === 1 &&
-      confidence.probes.length === 4096 &&
-      confidence.projection.length === 4096;
-    this.#confidenceProbes = supportedConfidence
-      ? bufferWithData(device, "needle.confidence.probes", confidence.probes, STORAGE)
-      : undefined;
-    this.#confidenceProjection = supportedConfidence
-      ? bufferWithData(device, "needle.confidence.projection", confidence.projection, STORAGE)
-      : undefined;
-    this.#confidenceBias = supportedConfidence
-      ? bufferWithData(device, "needle.confidence.bias", confidence.bias, STORAGE)
-      : undefined;
-    this.#confidenceMaxima = supportedConfidence
-      ? storageBuffer(device, "needle.confidence.maxima", 8 * 4, COPY_DST)
-      : undefined;
-    this.#confidenceDenominators = supportedConfidence
-      ? storageBuffer(device, "needle.confidence.denominators", 8 * 4, COPY_DST)
-      : undefined;
-    this.#confidenceWeighted = supportedConfidence
-      ? storageBuffer(device, "needle.confidence.weighted", 4096 * 4, COPY_DST)
-      : undefined;
-    this.#confidenceResult = supportedConfidence
-      ? storageBuffer(device, "needle.confidence.result", 4, COPY_SRC)
-      : undefined;
-    this.#allowedTokens = storageBuffer(
-      device,
-      "needle.selection.allowed",
-      geometry.vocabularySize * 4,
-      COPY_DST,
-    );
-    this.#selectionParams = storageBuffer(device, "needle.selection.params", 8, COPY_DST);
-    this.#selectionResult = storageBuffer(device, "needle.selection.result", 8, COPY_SRC);
+    this.#confidence = new ResidentConfidence(device, weights);
+    this.#selector = new ResidentTokenSelector(device, this.#logits, geometry.vocabularySize);
     this.#staging = device.createBuffer({
       label: "needle.attention.readback",
       size: Math.max(lanesBytes, geometry.vocabularySize * 4),
@@ -420,48 +342,14 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     this.#projectionParams = Array.from({ length: 9 }, (_, index) =>
       storageBuffer(device, `needle.attention.projection-params.${index}`, 32, COPY_DST),
     );
-    this.#pipelines = createPipelines(device);
+    this.#pipelines = createResidentPipelines(device);
   }
 
   reset(options: FusedAttentionResetOptions): boolean {
     invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "Fused attention was disposed");
     const geometry = this.#weights.geometry;
-    this.#enabled =
-      options.kvCache === "int8" &&
-      geometry.modelDimension === 512 &&
-      geometry.headDimension === 64 &&
-      geometry.numberOfHeads === 8 &&
-      geometry.numberOfKVHeads === 4 &&
-      geometry.mhcLanes === 4 &&
-      geometry.hadamardDimension === 512 &&
-      geometry.kvWindow > 0 &&
-      this.#weights.layers.every(
-        (layer) =>
-          layer.queryProjection.inputSize === 512 &&
-          layer.queryProjection.outputSize === 512 &&
-          layer.keyProjection.inputSize === 512 &&
-          layer.keyProjection.outputSize === 256 &&
-          layer.keyProjection.groupSize === layer.queryProjection.groupSize &&
-          layer.valueProjection.inputSize === 512 &&
-          layer.valueProjection.outputSize === 256 &&
-          layer.valueProjection.groupSize === layer.queryProjection.groupSize &&
-          layer.gateProjection.inputSize === 512 &&
-          layer.gateProjection.outputSize === 512 &&
-          layer.gateProjection.groupSize === layer.queryProjection.groupSize &&
-          layer.outputProjection.inputSize === 512 &&
-          layer.outputProjection.outputSize === 512 &&
-          layer.outputProjection.groupSize === 128 &&
-          layer.hadamardD1.length === 512 &&
-          layer.hadamardD2.length === 512 &&
-          layer.hadamardD3.length === 512,
-      ) &&
-      options.sinkLength + geometry.kvWindow <= 512;
-    const confidenceAvailable = Boolean(
-      this.#confidenceMaxima &&
-        this.#confidenceDenominators &&
-        this.#confidenceWeighted &&
-        this.#confidenceResult,
-    );
+    this.#enabled = supportsResidentExecution(this.#weights, options);
+    const confidenceAvailable = this.#confidence.available;
     this.#residentEnabled =
       this.#enabled &&
       this.#residentLayers &&
@@ -469,21 +357,7 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       (!options.collectConfidence || confidenceAvailable);
     this.#collectConfidence = this.#residentEnabled && options.collectConfidence;
     if (!this.#enabled) return false;
-    if (this.#collectConfidence) {
-      const maxima = new Float32Array(8);
-      maxima.fill(Number.NEGATIVE_INFINITY);
-      this.#device.queue.writeBuffer(this.#confidenceMaxima as GPUBuffer, 0, bufferSource(maxima));
-      this.#device.queue.writeBuffer(
-        this.#confidenceDenominators as GPUBuffer,
-        0,
-        bufferSource(new Float32Array(8)),
-      );
-      this.#device.queue.writeBuffer(
-        this.#confidenceWeighted as GPUBuffer,
-        0,
-        bufferSource(new Float32Array(4096)),
-      );
-    }
+    if (this.#collectConfidence) this.#confidence.reset();
     if (this.#residentEnabled) {
       this.#device.queue.writeBuffer(
         this.#residentEngramRingValid,
@@ -546,11 +420,12 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     if (this.#collectConfidence) {
       const pipelines = await this.#pipelines;
       const encoder = this.#device.createCommandEncoder({ label: "needle.confidence.embedding" });
-      const pass = encoder.beginComputePass({ label: "needle.confidence.pool-embedding" });
-      pass.setPipeline(pipelines.confidencePool);
-      pass.setBindGroup(0, this.#getConfidenceInputGroup(pipelines.confidencePool));
-      pass.dispatchWorkgroups(1);
-      pass.end();
+      this.#confidence.encodePool(
+        encoder,
+        pipelines.confidencePool,
+        this.#lanesInput,
+        "needle.confidence.pool-embedding",
+      );
       this.#device.queue.submit([encoder.finish()]);
     }
     return true;
@@ -833,11 +708,12 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
 
     this.#encodeAttentionAndPost(encoder, layer, layerIndex, position, pipelines);
     if (this.#collectConfidence) {
-      const confidencePass = encoder.beginComputePass({ label: "needle.confidence.pool-layer" });
-      confidencePass.setPipeline(pipelines.confidencePool);
-      confidencePass.setBindGroup(0, this.#getConfidenceNextGroup(pipelines.confidencePool));
-      confidencePass.dispatchWorkgroups(1);
-      confidencePass.end();
+      this.#confidence.encodePool(
+        encoder,
+        pipelines.confidencePool,
+        this.#nextLanes,
+        "needle.confidence.pool-layer",
+      );
     }
     encoder.copyBufferToBuffer(this.#nextLanes, 0, this.#lanesInput, 0, 2048 * 4);
     this.#device.queue.submit([encoder.finish()]);
@@ -884,57 +760,14 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       "BACKEND_UNAVAILABLE",
       "Resident layers are off",
     );
-    const count = allowedTokenIds?.length ?? this.#weights.geometry.vocabularySize;
-    invariant(
-      count > 0 && count <= 8192,
-      "INVALID_CACT",
-      "Allowed token set is empty or too large",
-    );
-    if (allowedTokenIds) {
-      this.#device.queue.writeBuffer(this.#allowedTokens, 0, bufferSource(allowedTokenIds));
-    }
-    this.#device.queue.writeBuffer(
-      this.#selectionParams,
-      0,
-      bufferSource(new Uint32Array([count, allowedTokenIds ? 1 : 0])),
-    );
     const pipelines = await this.#pipelines;
-    const encoder = this.#device.createCommandEncoder({ label: "needle.selection.encoder" });
-    const pass = encoder.beginComputePass({ label: "needle.selection.argmax" });
-    pass.setPipeline(pipelines.selectToken);
-    pass.setBindGroup(0, this.#getSelectionGroup(pipelines.selectToken));
-    pass.dispatchWorkgroups(1);
-    pass.end();
-    encoder.copyBufferToBuffer(this.#selectionResult, 0, this.#staging, 0, 8);
-    this.#device.queue.submit([encoder.finish()]);
-    await this.#staging.mapAsync(MAP_READ, 0, 8);
-    try {
-      const view = new DataView(this.#staging.getMappedRange(0, 8));
-      return { id: view.getUint32(0, true), logProbability: view.getFloat32(4, true) };
-    } finally {
-      this.#staging.unmap();
-    }
+    return this.#selector.select(pipelines.selectToken, allowedTokenIds);
   }
 
   async residentConfidence(): Promise<number | undefined> {
     if (!this.#collectConfidence || !this.#residentEnabled || this.#disposed) return undefined;
-    const result = this.#confidenceResult;
-    invariant(result, "BACKEND_UNAVAILABLE", "Resident confidence output is missing");
     const pipelines = await this.#pipelines;
-    const encoder = this.#device.createCommandEncoder({ label: "needle.confidence.final" });
-    const pass = encoder.beginComputePass({ label: "needle.confidence.head" });
-    pass.setPipeline(pipelines.confidenceHead);
-    pass.setBindGroup(0, this.#getConfidenceHeadGroup(pipelines.confidenceHead));
-    pass.dispatchWorkgroups(1);
-    pass.end();
-    encoder.copyBufferToBuffer(result, 0, this.#staging, 0, 4);
-    this.#device.queue.submit([encoder.finish()]);
-    await this.#staging.mapAsync(MAP_READ, 0, 4);
-    try {
-      return new Float32Array(this.#staging.getMappedRange(0, 4))[0];
-    } finally {
-      this.#staging.unmap();
-    }
+    return this.#confidence.resolve(pipelines.confidenceHead);
   }
 
   async readResidentLanes(): Promise<Float32Array> {
@@ -1176,6 +1009,8 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#destroyCache();
+    this.#selector.dispose();
+    this.#confidence.dispose();
     for (const buffer of [
       this.#codebook,
       this.#preparedInput,
@@ -1220,9 +1055,6 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       this.#finalHidden,
       this.#preparedFinal,
       this.#logits,
-      this.#allowedTokens,
-      this.#selectionParams,
-      this.#selectionResult,
       this.#staging,
       this.#queryParams,
       this.#kvParams,
@@ -1233,17 +1065,6 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       buffer.destroy();
     }
     for (const buffer of this.#residentSlotBuffers) buffer.destroy();
-    for (const buffer of [
-      this.#confidenceProbes,
-      this.#confidenceProjection,
-      this.#confidenceBias,
-      this.#confidenceMaxima,
-      this.#confidenceDenominators,
-      this.#confidenceWeighted,
-      this.#confidenceResult,
-    ]) {
-      buffer?.destroy();
-    }
     for (const matrix of this.#allocatedMatrices) {
       matrix.packed.destroy();
       matrix.norms.destroy();
@@ -1720,11 +1541,12 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     routing.dispatchWorkgroups(1);
     routing.end();
     if (this.#collectConfidence) {
-      const confidence = encoder.beginComputePass({ label: "needle.resident-token.confidence" });
-      confidence.setPipeline(pipelines.confidencePool);
-      confidence.setBindGroup(0, this.#getConfidenceNextGroup(pipelines.confidencePool));
-      confidence.dispatchWorkgroups(1);
-      confidence.end();
+      this.#confidence.encodePool(
+        encoder,
+        pipelines.confidencePool,
+        this.#nextLanes,
+        "needle.resident-token.confidence",
+      );
     }
     encoder.copyBufferToBuffer(this.#nextLanes, 0, this.#lanesInput, 0, 2048 * 4);
   }
@@ -2113,79 +1935,6 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     return this.#prepareFinalGroup;
   }
 
-  #getConfidenceInputGroup(pipeline: GPUComputePipeline): GPUBindGroup {
-    if (this.#confidenceInputGroup) return this.#confidenceInputGroup;
-    this.#confidenceInputGroup = this.#createConfidencePoolGroup(this.#lanesInput, pipeline);
-    return this.#confidenceInputGroup;
-  }
-
-  #getConfidenceNextGroup(pipeline: GPUComputePipeline): GPUBindGroup {
-    if (this.#confidenceNextGroup) return this.#confidenceNextGroup;
-    this.#confidenceNextGroup = this.#createConfidencePoolGroup(this.#nextLanes, pipeline);
-    return this.#confidenceNextGroup;
-  }
-
-  #createConfidencePoolGroup(source: GPUBuffer, pipeline: GPUComputePipeline): GPUBindGroup {
-    const probes = this.#confidenceProbes;
-    const maxima = this.#confidenceMaxima;
-    const denominators = this.#confidenceDenominators;
-    const weighted = this.#confidenceWeighted;
-    invariant(
-      probes && maxima && denominators && weighted,
-      "BACKEND_UNAVAILABLE",
-      "Resident confidence buffers are missing",
-    );
-    return this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: source } },
-        { binding: 1, resource: { buffer: probes } },
-        { binding: 2, resource: { buffer: maxima } },
-        { binding: 3, resource: { buffer: denominators } },
-        { binding: 4, resource: { buffer: weighted } },
-      ],
-    });
-  }
-
-  #getConfidenceHeadGroup(pipeline: GPUComputePipeline): GPUBindGroup {
-    if (this.#confidenceHeadGroup) return this.#confidenceHeadGroup;
-    const denominators = this.#confidenceDenominators;
-    const weighted = this.#confidenceWeighted;
-    const projection = this.#confidenceProjection;
-    const bias = this.#confidenceBias;
-    const result = this.#confidenceResult;
-    invariant(
-      denominators && weighted && projection && bias && result,
-      "BACKEND_UNAVAILABLE",
-      "Resident confidence head is missing",
-    );
-    this.#confidenceHeadGroup = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: denominators } },
-        { binding: 1, resource: { buffer: weighted } },
-        { binding: 2, resource: { buffer: projection } },
-        { binding: 3, resource: { buffer: bias } },
-        { binding: 4, resource: { buffer: result } },
-      ],
-    });
-    return this.#confidenceHeadGroup;
-  }
-
-  #getSelectionGroup(pipeline: GPUComputePipeline): GPUBindGroup {
-    if (this.#selectionGroup) return this.#selectionGroup;
-    this.#selectionGroup = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.#logits } },
-        { binding: 1, resource: { buffer: this.#allowedTokens } },
-        { binding: 2, resource: { buffer: this.#selectionParams } },
-        { binding: 3, resource: { buffer: this.#selectionResult } },
-      ],
-    });
-    return this.#selectionGroup;
-  }
-
   #queryGroup(layer: CactLayer, pipeline: GPUComputePipeline): GPUBindGroup {
     const cached = this.#queryGroups.get(layer);
     if (cached) return cached;
@@ -2334,139 +2083,4 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     });
     return this.#routingGroup;
   }
-}
-
-async function createPipelines(device: GPUDevice): Promise<Pipelines> {
-  const descriptors = [
-    ["cq", CQ_MATVEC_WGSL, "main"],
-    ["query", QUERY_NORM_ROPE_WGSL, "query_norm_rope"],
-    ["kv", KV_NORM_ROPE_STORE_WGSL, "kv_norm_rope_store"],
-    ["scores", ATTENTION_SCORES_WGSL, "attention_scores"],
-    ["attention", ATTENTION_SOFTMAX_GATE_WGSL, "attention_softmax_gate"],
-    ["prepare", PREPARE_ATTENTION_WGSL, "prepare_attention"],
-    ["sandwich", SANDWICH_PREPARE_MLP_WGSL, "sandwich_prepare_mlp"],
-    ["mlp", HADAMARD_MLP_DELTA_WGSL, "hadamard_mlp_delta"],
-    ["routing", POST_MHC_ROUTING_WGSL, "post_mhc_routing"],
-    ["rms-lanes", RMS_LANES_WGSL, "rms_lanes"],
-    ["mhc-pre", MHC_PRE_WGSL, "mhc_pre"],
-    ["engram", ENGRAM_INJECT_WGSL, "engram_inject"],
-    ["engram-gather", ENGRAM_GATHER_WGSL, "engram_gather"],
-    ["engram-convolve", ENGRAM_CONVOLVE_WGSL, "engram_convolve"],
-    ["norm-512", RMS_NORM_512_WGSL, "rms_norm_512"],
-    ["final-norm", FINAL_NORM_WGSL, "final_norm"],
-    ["confidence-pool", CONFIDENCE_POOL_WGSL, "confidence_pool"],
-    ["confidence-head", CONFIDENCE_HEAD_WGSL, "confidence_head"],
-    ["select-token", SELECT_TOKEN_WGSL, "select_token"],
-  ] as const;
-  const pipelines = await Promise.all(
-    descriptors.map(async ([label, source, entryPoint]) => {
-      const module = device.createShaderModule({
-        label: `needle.attention.${label}.shader`,
-        code: source,
-      });
-      const descriptor: GPUComputePipelineDescriptor = {
-        label: `needle.attention.${label}.pipeline`,
-        layout: "auto",
-        compute: { module, entryPoint },
-      };
-      return device.createComputePipelineAsync
-        ? device.createComputePipelineAsync(descriptor)
-        : device.createComputePipeline(descriptor);
-    }),
-  );
-  const [
-    cq,
-    query,
-    kv,
-    scores,
-    attention,
-    prepare,
-    sandwich,
-    mlp,
-    routing,
-    rmsLanes,
-    mhcPre,
-    engram,
-    engramGather,
-    engramConvolve,
-    norm512,
-    finalNorm,
-    confidencePool,
-    confidenceHead,
-    selectToken,
-  ] = pipelines;
-  invariant(
-    cq &&
-      query &&
-      kv &&
-      scores &&
-      attention &&
-      prepare &&
-      sandwich &&
-      mlp &&
-      routing &&
-      rmsLanes &&
-      mhcPre &&
-      engram &&
-      engramGather &&
-      engramConvolve &&
-      norm512 &&
-      finalNorm &&
-      confidencePool &&
-      confidenceHead &&
-      selectToken,
-    "WEBGPU_UNAVAILABLE",
-    "Attention pipeline failed",
-  );
-  return {
-    cq,
-    query,
-    kv,
-    scores,
-    attention,
-    prepare,
-    sandwich,
-    mlp,
-    routing,
-    rmsLanes,
-    mhcPre,
-    engram,
-    engramGather,
-    engramConvolve,
-    norm512,
-    finalNorm,
-    confidencePool,
-    confidenceHead,
-    selectToken,
-  };
-}
-
-function storageBuffer(device: GPUDevice, label: string, size: number, extraUsage = 0): GPUBuffer {
-  return device.createBuffer({ label, size: align4(size), usage: STORAGE | extraUsage });
-}
-
-function bufferWithData(
-  device: GPUDevice,
-  label: string,
-  data: ArrayBufferView,
-  extraUsage = 0,
-): GPUBuffer {
-  const buffer = storageBuffer(device, label, data.byteLength, COPY_DST | extraUsage);
-  device.queue.writeBuffer(buffer, 0, bufferSource(data));
-  return buffer;
-}
-
-function floatBits(value: number): number {
-  const view = new DataView(new ArrayBuffer(4));
-  view.setFloat32(0, value, true);
-  return view.getUint32(0, true);
-}
-
-function align4(value: number): number {
-  return Math.max(4, (value + 3) & ~3);
-}
-
-function bufferSource(data: ArrayBufferView): GPUAllowSharedBufferSource {
-  if (data.buffer instanceof ArrayBuffer) return data as ArrayBufferView<ArrayBuffer>;
-  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
 }

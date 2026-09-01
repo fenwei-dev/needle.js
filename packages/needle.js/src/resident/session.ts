@@ -16,6 +16,14 @@ import { invariant } from "../errors.js";
 import type { CactLayer, CactWeights, CqMatrix } from "../model/cact.js";
 import { supportsResidentExecution } from "./compatibility.js";
 import { ResidentConfidence } from "./confidence.js";
+import {
+  type AttentionParameters,
+  createRawParameterFactory,
+  type KvParameters,
+  type QueryParameters,
+  type ResidentParameter,
+  type ResidentParameterFactory,
+} from "./parameters.js";
 import { createResidentPipelines, type ResidentPipelines as Pipelines } from "./pipelines.js";
 import { ResidentTokenSelector } from "./selection.js";
 import {
@@ -57,9 +65,9 @@ interface ResidentEngramGroups {
 interface ResidentLayerSlot {
   readonly layer: CactLayer;
   readonly projectionParams: readonly GPUBuffer[];
-  readonly queryParams: GPUBuffer;
-  readonly kvParams: GPUBuffer;
-  readonly attentionParams: GPUBuffer;
+  readonly queryParams: ResidentParameter<QueryParameters>;
+  readonly kvParams: ResidentParameter<KvParameters>;
+  readonly attentionParams: ResidentParameter<AttentionParameters>;
   readonly projectionGroups: readonly GPUBindGroup[];
   readonly phiGroups: readonly GPUBindGroup[];
   readonly queryGroup: GPUBindGroup;
@@ -81,6 +89,7 @@ export interface WebGpuResidentOptions {
   readonly fuseRouting: boolean;
   readonly residentLayers: boolean;
   readonly singleTokenSubmission: boolean;
+  readonly parameterFactory?: ResidentParameterFactory;
 }
 
 export class WebGpuResidentSession implements FusedAttentionSession {
@@ -90,6 +99,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
   readonly #fuseRouting: boolean;
   readonly #residentLayers: boolean;
   readonly #singleTokenSubmission: boolean;
+  readonly #parameterFactory: ResidentParameterFactory;
   readonly #codebook: GPUBuffer;
   readonly #preparedInput: GPUBuffer;
   readonly #normalizedLanes: GPUBuffer;
@@ -135,9 +145,9 @@ export class WebGpuResidentSession implements FusedAttentionSession {
   readonly #confidence: ResidentConfidence;
   readonly #selector: ResidentTokenSelector;
   readonly #staging: GPUBuffer;
-  readonly #queryParams: GPUBuffer;
-  readonly #kvParams: GPUBuffer;
-  readonly #attentionParams: GPUBuffer;
+  readonly #queryParams: ResidentParameter<QueryParameters>;
+  readonly #kvParams: ResidentParameter<KvParameters>;
+  readonly #attentionParams: ResidentParameter<AttentionParameters>;
   readonly #layerParams: GPUBuffer;
   readonly #projectionParams: GPUBuffer[];
   readonly #matrixCache = new WeakMap<CqMatrix, GpuMatrix>();
@@ -172,6 +182,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
   #inputNormGroups = new WeakMap<CactLayer, GPUBindGroup>();
   #residentSlots: ResidentLayerSlot[] = [];
   #residentSlotBuffers: GPUBuffer[] = [];
+  #residentSlotParameters: Array<{ destroy(): void }> = [];
   #residentSlotAllocation = -1;
   #residentEnabled = false;
   #collectConfidence = false;
@@ -335,9 +346,11 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       size: Math.max(lanesBytes, geometry.vocabularySize * 4),
       usage: MAP_READ | COPY_DST,
     });
-    this.#queryParams = storageBuffer(device, "needle.attention.query-params", 8, COPY_DST);
-    this.#kvParams = storageBuffer(device, "needle.attention.kv-params", 32, COPY_DST);
-    this.#attentionParams = storageBuffer(device, "needle.attention.params", 32, COPY_DST);
+    const parameterFactory = options.parameterFactory ?? createRawParameterFactory(device);
+    this.#parameterFactory = parameterFactory;
+    this.#queryParams = parameterFactory.query("needle.attention.query-params");
+    this.#kvParams = parameterFactory.kv("needle.attention.kv-params");
+    this.#attentionParams = parameterFactory.attention("needle.attention.params");
     this.#layerParams = storageBuffer(device, "needle.attention.layer-params", 4, COPY_DST);
     this.#projectionParams = Array.from({ length: 9 }, (_, index) =>
       storageBuffer(device, `needle.attention.projection-params.${index}`, 32, COPY_DST),
@@ -519,43 +532,27 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     for (let layerIndex = 0; layerIndex < slots.length; layerIndex++) {
       const slot = slots[layerIndex];
       invariant(slot, "INVALID_CACT", `Missing resident slot ${layerIndex}`);
-      this.#device.queue.writeBuffer(
-        slot.queryParams,
-        0,
-        bufferSource(new Uint32Array([request.position, thetaBits])),
-      );
-      this.#device.queue.writeBuffer(
-        slot.kvParams,
-        0,
-        bufferSource(
-          new Uint32Array([
-            layerIndex,
-            request.position,
-            this.#kvAllocation,
-            this.#sinkLength,
-            geometry.kvWindow,
-            geometry.numberOfKVHeads,
-            thetaBits,
-            0,
-          ]),
-        ),
-      );
-      this.#device.queue.writeBuffer(
-        slot.attentionParams,
-        0,
-        bufferSource(
-          new Uint32Array([
-            layerIndex,
-            request.position,
-            this.#kvAllocation,
-            this.#sinkLength,
-            geometry.kvWindow,
-            geometry.numberOfKVHeads,
-            geometry.numberOfHeads,
-            0,
-          ]),
-        ),
-      );
+      slot.queryParams.write({ position: request.position, thetaBits });
+      slot.kvParams.write({
+        layer: layerIndex,
+        position: request.position,
+        allocation: this.#kvAllocation,
+        sinkLength: this.#sinkLength,
+        window: geometry.kvWindow,
+        kvHeads: geometry.numberOfKVHeads,
+        thetaBits,
+        reserved: 0,
+      });
+      slot.attentionParams.write({
+        layer: layerIndex,
+        position: request.position,
+        allocation: this.#kvAllocation,
+        sinkLength: this.#sinkLength,
+        window: geometry.kvWindow,
+        kvHeads: geometry.numberOfKVHeads,
+        heads: geometry.numberOfHeads,
+        reserved: 0,
+      });
       const engramSite = geometry.engramLayers.indexOf(layerIndex);
       if (engramSite >= 0 && slot.engramKey && slot.engramValue) {
         const key = request.engramKeys[engramSite];
@@ -854,44 +851,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
         bufferSource(matrixParameters(matrix, 0, matrix.outputSize)),
       );
     }
-    const thetaBits = floatBits(geometry.ropeTheta);
-    this.#device.queue.writeBuffer(
-      this.#queryParams,
-      0,
-      bufferSource(new Uint32Array([position, thetaBits])),
-    );
-    this.#device.queue.writeBuffer(
-      this.#kvParams,
-      0,
-      bufferSource(
-        new Uint32Array([
-          layerIndex,
-          position,
-          this.#kvAllocation,
-          this.#sinkLength,
-          geometry.kvWindow,
-          geometry.numberOfKVHeads,
-          thetaBits,
-          0,
-        ]),
-      ),
-    );
-    this.#device.queue.writeBuffer(
-      this.#attentionParams,
-      0,
-      bufferSource(
-        new Uint32Array([
-          layerIndex,
-          position,
-          this.#kvAllocation,
-          this.#sinkLength,
-          geometry.kvWindow,
-          geometry.numberOfKVHeads,
-          geometry.numberOfHeads,
-          0,
-        ]),
-      ),
-    );
+    this.#writeAttentionParams(layer, layerIndex, position);
 
     const encoder = this.#device.createCommandEncoder({ label: "needle.attention.encoder" });
     const projections = encoder.beginComputePass({ label: "needle.attention.projections" });
@@ -1011,6 +971,9 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     this.#destroyCache();
     this.#selector.dispose();
     this.#confidence.dispose();
+    this.#queryParams.destroy();
+    this.#kvParams.destroy();
+    this.#attentionParams.destroy();
     for (const buffer of [
       this.#codebook,
       this.#preparedInput,
@@ -1056,15 +1019,13 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       this.#preparedFinal,
       this.#logits,
       this.#staging,
-      this.#queryParams,
-      this.#kvParams,
-      this.#attentionParams,
       this.#layerParams,
       ...this.#projectionParams,
     ]) {
       buffer.destroy();
     }
     for (const buffer of this.#residentSlotBuffers) buffer.destroy();
+    for (const parameter of this.#residentSlotParameters) parameter.destroy();
     for (const matrix of this.#allocatedMatrices) {
       matrix.packed.destroy();
       matrix.norms.destroy();
@@ -1179,7 +1140,9 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       return this.#residentSlots;
     }
     for (const buffer of this.#residentSlotBuffers) buffer.destroy();
+    for (const parameter of this.#residentSlotParameters) parameter.destroy();
     this.#residentSlotBuffers = [];
+    this.#residentSlotParameters = [];
     this.#residentSlots = [];
     this.#residentSlotAllocation = this.#kvAllocation;
     const keyCache = this.#keyCache;
@@ -1269,9 +1232,14 @@ export class WebGpuResidentSession implements FusedAttentionSession {
           this.#createProjectionGroup(matrix, this.#preparedLanes, params, output, pipelines.cq),
         );
       }
-      const queryParams = makeDynamic(`needle.resident.${layerIndex}.query-params`, 8);
-      const kvParams = makeDynamic(`needle.resident.${layerIndex}.kv-params`, 32);
-      const attentionParams = makeDynamic(`needle.resident.${layerIndex}.attention-params`, 32);
+      const queryParams = this.#parameterFactory.query(
+        `needle.resident.${layerIndex}.query-params`,
+      );
+      const kvParams = this.#parameterFactory.kv(`needle.resident.${layerIndex}.kv-params`);
+      const attentionParams = this.#parameterFactory.attention(
+        `needle.resident.${layerIndex}.attention-params`,
+      );
+      this.#residentSlotParameters.push(queryParams, kvParams, attentionParams);
       const hPre = new Float32Array(6);
       hPre[0] = this.#weights.mhcAPre[layerIndex] ?? 0;
       hPre[1] = layerIndex % 4;
@@ -1294,7 +1262,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
         entries: [
           { binding: 0, resource: { buffer: this.#query } },
           { binding: 1, resource: { buffer: norms.query } },
-          { binding: 2, resource: { buffer: queryParams } },
+          { binding: 2, resource: { buffer: queryParams.buffer } },
         ],
       });
       const kvGroup = this.#device.createBindGroup({
@@ -1307,7 +1275,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
           { binding: 4, resource: { buffer: valueCache } },
           { binding: 5, resource: { buffer: keyScales } },
           { binding: 6, resource: { buffer: valueScales } },
-          { binding: 7, resource: { buffer: kvParams } },
+          { binding: 7, resource: { buffer: kvParams.buffer } },
         ],
       });
       const scoreGroup = this.#device.createBindGroup({
@@ -1316,7 +1284,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
           { binding: 0, resource: { buffer: this.#query } },
           { binding: 1, resource: { buffer: keyCache } },
           { binding: 2, resource: { buffer: keyScales } },
-          { binding: 3, resource: { buffer: attentionParams } },
+          { binding: 3, resource: { buffer: attentionParams.buffer } },
           { binding: 4, resource: { buffer: this.#scores } },
         ],
       });
@@ -1326,7 +1294,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
           { binding: 0, resource: { buffer: this.#gate } },
           { binding: 1, resource: { buffer: valueCache } },
           { binding: 2, resource: { buffer: valueScales } },
-          { binding: 3, resource: { buffer: attentionParams } },
+          { binding: 3, resource: { buffer: attentionParams.buffer } },
           { binding: 4, resource: { buffer: this.#scores } },
           { binding: 5, resource: { buffer: this.#attentionOutput } },
         ],
@@ -1606,43 +1574,27 @@ export class WebGpuResidentSession implements FusedAttentionSession {
   #writeAttentionParams(layer: CactLayer, layerIndex: number, position: number): void {
     const geometry = this.#weights.geometry;
     const thetaBits = floatBits(geometry.ropeTheta);
-    this.#device.queue.writeBuffer(
-      this.#queryParams,
-      0,
-      bufferSource(new Uint32Array([position, thetaBits])),
-    );
-    this.#device.queue.writeBuffer(
-      this.#kvParams,
-      0,
-      bufferSource(
-        new Uint32Array([
-          layerIndex,
-          position,
-          this.#kvAllocation,
-          this.#sinkLength,
-          geometry.kvWindow,
-          geometry.numberOfKVHeads,
-          thetaBits,
-          0,
-        ]),
-      ),
-    );
-    this.#device.queue.writeBuffer(
-      this.#attentionParams,
-      0,
-      bufferSource(
-        new Uint32Array([
-          layerIndex,
-          position,
-          this.#kvAllocation,
-          this.#sinkLength,
-          geometry.kvWindow,
-          geometry.numberOfKVHeads,
-          geometry.numberOfHeads,
-          0,
-        ]),
-      ),
-    );
+    this.#queryParams.write({ position, thetaBits });
+    this.#kvParams.write({
+      layer: layerIndex,
+      position,
+      allocation: this.#kvAllocation,
+      sinkLength: this.#sinkLength,
+      window: geometry.kvWindow,
+      kvHeads: geometry.numberOfKVHeads,
+      thetaBits,
+      reserved: 0,
+    });
+    this.#attentionParams.write({
+      layer: layerIndex,
+      position,
+      allocation: this.#kvAllocation,
+      sinkLength: this.#sinkLength,
+      window: geometry.kvWindow,
+      kvHeads: geometry.numberOfKVHeads,
+      heads: geometry.numberOfHeads,
+      reserved: 0,
+    });
     this.#device.queue.writeBuffer(
       this.#layerParams,
       0,
@@ -1943,7 +1895,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       entries: [
         { binding: 0, resource: { buffer: this.#query } },
         { binding: 1, resource: { buffer: this.#norms(layer).query } },
-        { binding: 2, resource: { buffer: this.#queryParams } },
+        { binding: 2, resource: { buffer: this.#queryParams.buffer } },
       ],
     });
     this.#queryGroups.set(layer, group);
@@ -1972,7 +1924,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
         { binding: 4, resource: { buffer: valueCache } },
         { binding: 5, resource: { buffer: keyScales } },
         { binding: 6, resource: { buffer: valueScales } },
-        { binding: 7, resource: { buffer: this.#kvParams } },
+        { binding: 7, resource: { buffer: this.#kvParams.buffer } },
       ],
     });
     this.#kvGroups.set(layer, group);
@@ -1990,7 +1942,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
         { binding: 0, resource: { buffer: this.#query } },
         { binding: 1, resource: { buffer: keyCache } },
         { binding: 2, resource: { buffer: keyScales } },
-        { binding: 3, resource: { buffer: this.#attentionParams } },
+        { binding: 3, resource: { buffer: this.#attentionParams.buffer } },
         { binding: 4, resource: { buffer: this.#scores } },
       ],
     });
@@ -2008,7 +1960,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
         { binding: 0, resource: { buffer: this.#gate } },
         { binding: 1, resource: { buffer: valueCache } },
         { binding: 2, resource: { buffer: valueScales } },
-        { binding: 3, resource: { buffer: this.#attentionParams } },
+        { binding: 3, resource: { buffer: this.#attentionParams.buffer } },
         { binding: 4, resource: { buffer: this.#scores } },
         { binding: 5, resource: { buffer: this.#attentionOutput } },
       ],

@@ -141,12 +141,17 @@ src/resident/
   selection.ts      # allowed-token argmax and log-softmax
   compatibility.ts  # geometry/KV feature gates
   webgpu.ts         # raw buffer and upload helpers
+  parameters.ts     # neutral typed parameter contracts/raw factory
 
 src/backends/typegpu.ts
   # TypeGPU root/device acquisition, lifecycle, adaptive operators
+src/backends/typegpu-parameters.ts
+  # d.struct schemas and root-owned typed parameter buffers
 ```
 
-`WebGpuResidentSession` depends only on `GPUDevice`, parsed model weights, and neutral resident options. TypeGPU is the supported public integration, but model execution is not coupled to TypeGPU-specific resource wrappers or shader authoring APIs.
+`WebGpuResidentSession` depends only on `GPUDevice`, parsed model weights, and neutral resident options. TypeGPU is the supported public integration.
+
+Dynamic query, KV, and attention parameter blocks now use TypeGPU `d.struct` schemas and root-owned typed storage buffers. The adapter supplies them through `ResidentParameterFactory`; the resident core sees named values and raw buffers, not TypeGPU implementation types. A raw factory remains available as the portability/reference implementation. This preserves the library-neutral execution graph while recovering TypeGPU's compile-time layout and typed-write benefits.
 
 ## Browser correctness suite
 

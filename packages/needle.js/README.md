@@ -347,6 +347,8 @@ The fixture checks the published 8,192-token/27-layer geometry and an exact cons
 
 The resident engine is library-neutral internally: `src/resident/session.ts` accepts a raw `GPUDevice`, while `resident/pipelines.ts`, `kernels.ts`, `confidence.ts`, `selection.ts`, `compatibility.ts`, and `webgpu.ts` own the execution core. `backends/typegpu.ts` is the thin public adapter responsible for TypeGPU device acquisition, lifecycle, and the adaptive operator fallback.
 
+The first TypeGPU-native migration covers dynamic query, KV, and attention parameter buffers. `typegpu-parameters.ts` defines named `d.struct` schemas, creates root-owned typed storage buffers, and writes objects instead of manually indexed arrays. The resident core consumes them through a neutral parameter-factory interface and retains a raw factory for portability. Schema tests lock the WGSL byte sizes at 8/32/32 bytes; browser parity and throughput remain unchanged.
+
 `test:browser` bundles a real-browser suite and drives it through `Bun.WebView`. On macOS it uses WKWebView/WebGPU and verifies resident greedy text, confidence tolerance, constrained tool selection, KV-window wraparound with prefix sinks, repeated resets, float32-KV fallback, and cancellation. Without `NEEDLE_MODEL_PATH`, it downloads and caches the pinned model.
 
 ## Attribution and licenses

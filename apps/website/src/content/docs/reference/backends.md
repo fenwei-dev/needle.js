@@ -34,12 +34,7 @@ const agent = await createNeedleTypeGPU({
   backendOptions: {
     // root: existingTgpuRoot,
     // device: existingGPUDevice,
-    // minimumGpuRows: 0, // force all matvecs onto WebGPU
-    // fusedAttention: true, // experimental resident int8 KV + attention
-    // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
-    // fusedRouting: true, // also fuse post-mHC Sinkhorn and nextX lanes
-    // residentLayers: true, // retain nextX and run complete layers on GPU
-    // singleTokenSubmission: true, // diagnostic: one submit for all layers
+    execution: "resident", // or "adaptive" (default)
   },
 });
 ```
@@ -51,6 +46,8 @@ bun add typegpu
 ```
 
 TypeGPU initializes or adopts the WebGPU device and resolves the CQ matvec WGSL. Packed matrices are uploaded lazily and cached on first use. Its row-parallel kernel uses one 32-lane workgroup per output row.
+
+`execution: "adaptive"` uses the CPU/GPU row cutoff and is the portable default. `execution: "resident"` enables complete resident execution when the published geometry, int8 KV mode, and device limits are compatible; otherwise it automatically falls back. The granular fusion, row-cutoff, and submission options remain diagnostic controls.
 
 ## vgpu
 
@@ -110,7 +107,7 @@ The individual fusion options are experimental. Small-context WebGPU attention i
 
 ### Resident layers
 
-`residentLayers: true` implies all three fusion stages and eliminates that lane-state round trip. At the start of a token it uploads the four replicated embedding lanes. For each layer it then queues, without a host readback:
+`execution: "resident"` enables all compatible fusion stages and eliminates that lane-state round trip. At the start of a token it uploads the four replicated embedding lanes. For each layer it then queues, without a host readback:
 
 1. global lane RMS and sixteen groupwise Hadamard preparations;
 2. selected mHC phi projections and h-pre lane reduction;

@@ -57,7 +57,7 @@ For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok
 
 `fusedRouting: true` additionally performs h-post gating, 20 log-space Sinkhorn iterations, four-lane routing, and `nextX` construction on GPU. In isolation it measured about **10.6 tok/s**, because it transfers 2,048 lane values in both directions each layer.
 
-`residentLayers: true` retains that `nextX` buffer for the next layer and adds GPU mHC pre-routing, h-pre reduction, engram injection, and input normalization. All 27 layers run without host readback. Final lane averaging, RMSNorm, activation preparation, and vocabulary projection also execute on GPU; non-logit prefill steps now read nothing after their layers.
+`execution: "resident"` retains that `nextX` buffer for the next layer and adds GPU mHC pre-routing, h-pre reduction, engram injection, and input normalization. All 27 layers run without host readback. Final lane averaging, RMSNorm, activation preparation, and vocabulary projection also execute on GPU; non-logit prefill steps now read nothing after their layers.
 
 | Resident-layer workload | CPU | TypeGPU resident layers |
 | --- | ---: | ---: |
@@ -109,13 +109,13 @@ bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --fused-mlp
 bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --fused-routing
 
 # Retain lanes and run all 27 layers without host readback
-bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers
+bun run --cwd packages/needle.js bench -- --execution resident
 
 # Compare resident confidence and constrained tool selection
-bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers --confidence --tool-parity
+bun run --cwd packages/needle.js bench -- --execution resident --confidence --tool-parity
 
 # Diagnostic one-submission token builder
-bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers --single-submission
+bun run --cwd packages/needle.js bench -- --execution resident --single-submission
 ```
 
 The harness bundles `scripts/bench-browser.ts`, serves it locally, and drives `Bun.WebView` with the `webkit` backend so Chrome is not launched with `--disable-gpu`.

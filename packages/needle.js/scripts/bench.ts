@@ -25,6 +25,7 @@ interface CliOptions {
   prompt: string;
   json: boolean;
   minimumGpuRows: number | undefined;
+  execution: "adaptive" | "resident" | undefined;
   fusedAttention: boolean;
   fusedMlp: boolean;
   fusedRouting: boolean;
@@ -47,6 +48,7 @@ function parseArgs(argv: string[]): CliOptions {
     prompt: DEFAULT_PROMPT,
     json: false,
     minimumGpuRows: undefined,
+    execution: undefined,
     fusedAttention: false,
     fusedMlp: false,
     fusedRouting: false,
@@ -62,7 +64,12 @@ function parseArgs(argv: string[]): CliOptions {
     else if (argument === "--confidence") options.collectConfidence = true;
     else if (argument === "--tool-parity") options.toolParity = true;
     else if (argument === "--fused-attention") options.fusedAttention = true;
-    else if (argument === "--fused-mlp") {
+    else if (argument === "--execution" && next) {
+      if (next !== "adaptive" && next !== "resident")
+        throw new Error(`Invalid execution mode ${next}`);
+      options.execution = next;
+      index++;
+    } else if (argument === "--fused-mlp") {
       options.fusedAttention = true;
       options.fusedMlp = true;
     } else if (argument === "--fused-routing") {
@@ -118,6 +125,7 @@ Options:
   --runs <n>                    Timed generations (default 2)
   --prompt <text>               Generation prompt
   --minimum-gpu-rows <n>        CPU fallback cutoff (default 1024; 0 = all GPU)
+  --execution adaptive|resident Stable TypeGPU execution policy
   --fused-attention             TypeGPU GPU-resident attention/KV experiment
   --fused-mlp                   Also fuse sandwich residuals and Hadamard MLP
   --fused-routing               Also fuse post-mHC routing and nextX lanes
@@ -263,6 +271,7 @@ try {
     prompt: cli.prompt,
     modelUrl: `${origin}/model.cact`,
     ...(cli.minimumGpuRows === undefined ? {} : { minimumGpuRows: cli.minimumGpuRows }),
+    ...(cli.execution === undefined ? {} : { execution: cli.execution }),
     ...(cli.fusedAttention ? { fusedAttention: true } : {}),
     ...(cli.fusedMlp ? { fusedMlp: true } : {}),
     ...(cli.fusedRouting ? { fusedRouting: true } : {}),
@@ -295,6 +304,7 @@ const report = {
     runs: cli.runs,
     prompt: cli.prompt,
     minimumGpuRows: cli.minimumGpuRows ?? 1024,
+    execution: cli.execution ?? "adaptive",
     fusedAttention: cli.fusedAttention,
     fusedMlp: cli.fusedMlp,
     fusedRouting: cli.fusedRouting,

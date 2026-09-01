@@ -65,7 +65,7 @@ window.runNeedleResidentSuite = async (modelUrl) => {
   const gpu = await NeedleModel.load({
     weights,
     backend: "typegpu",
-    backendOptions: { minimumGpuRows: 0, residentLayers: true },
+    backendOptions: { execution: "resident" },
   });
   try {
     const prompt = "The most surprising thing about local inference is";

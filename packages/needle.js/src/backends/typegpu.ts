@@ -57,7 +57,11 @@ interface BatchJob {
   readonly outputStart: number;
 }
 
+export type TypeGPUExecution = "adaptive" | "resident";
+
 export interface TypeGPUBackendOptions {
+  /** Stable execution policy. Resident mode automatically falls back when unsupported. */
+  readonly execution?: TypeGPUExecution;
   /** Reuse an existing TypeGPU root. Its lifetime remains caller-owned. */
   readonly root?: TgpuRoot;
   /** Adopt a raw device through `tgpu.initFromDevice`. */
@@ -69,13 +73,13 @@ export interface TypeGPUBackendOptions {
    * Defaults to 1024 output rows. Set to 0 to force every matvec onto WebGPU.
    */
   readonly minimumGpuRows?: number;
-  /** Keep Q/K/V, int8 KV cache, attention, gate, and output projection on GPU. */
+  /** @deprecated Diagnostic override; prefer `execution: "resident"`. */
   readonly fusedAttention?: boolean;
-  /** Also keep sandwich residuals and the fixed Hadamard MLP on GPU. */
+  /** @deprecated Diagnostic override; prefer `execution: "resident"`. */
   readonly fusedMlp?: boolean;
-  /** Also construct post-mHC routing and four-lane nextX on GPU. */
+  /** @deprecated Diagnostic override; prefer `execution: "resident"`. */
   readonly fusedRouting?: boolean;
-  /** Retain four-lane state and execute complete layers without readback. */
+  /** @deprecated Diagnostic override; prefer `execution: "resident"`. */
   readonly residentLayers?: boolean;
   /** Encode all 27 resident layers before one queue submission (diagnostic). */
   readonly singleTokenSubmission?: boolean;
@@ -87,6 +91,7 @@ export class TypeGPUBackend implements InferenceBackend {
   readonly name = "TypeGPU / WebGPU";
   readonly root: TgpuRoot;
   readonly device: GPUDevice;
+  readonly execution: TypeGPUExecution;
 
   readonly #ownsRoot: boolean;
   readonly #pipeline: GPUComputePipeline;
@@ -118,6 +123,7 @@ export class TypeGPUBackend implements InferenceBackend {
     pipeline: GPUComputePipeline,
     shaderModule: GPUShaderModule,
     minimumGpuRows: number,
+    execution: TypeGPUExecution,
     fusedAttention: boolean,
     fusedMlp: boolean,
     fusedRouting: boolean,
@@ -130,6 +136,7 @@ export class TypeGPUBackend implements InferenceBackend {
     this.#pipeline = pipeline;
     this.#shaderModule = shaderModule;
     this.#minimumGpuRows = minimumGpuRows;
+    this.execution = execution;
     this.#fusedAttentionEnabled = fusedAttention;
     this.#fusedMlpEnabled = fusedMlp;
     this.#fusedRoutingEnabled = fusedRouting;
@@ -183,6 +190,8 @@ export class TypeGPUBackend implements InferenceBackend {
       const pipeline = root.device.createComputePipelineAsync
         ? await root.device.createComputePipelineAsync(descriptor)
         : root.device.createComputePipeline(descriptor);
+      const execution = options.execution ?? "adaptive";
+      const resident = execution === "resident" || options.residentLayers === true;
       return new TypeGPUBackend(
         weights,
         root,
@@ -190,14 +199,11 @@ export class TypeGPUBackend implements InferenceBackend {
         pipeline,
         module,
         normalizeMinimumGpuRows(options.minimumGpuRows),
-        options.fusedAttention ??
-          options.fusedMlp ??
-          options.fusedRouting ??
-          options.residentLayers ??
-          false,
-        options.fusedMlp ?? options.fusedRouting ?? options.residentLayers ?? false,
-        options.fusedRouting ?? options.residentLayers ?? false,
-        options.residentLayers ?? false,
+        execution,
+        options.fusedAttention ?? options.fusedMlp ?? options.fusedRouting ?? resident,
+        options.fusedMlp ?? options.fusedRouting ?? resident,
+        options.fusedRouting ?? resident,
+        resident,
         options.singleTokenSubmission ?? false,
       );
     } catch (cause) {

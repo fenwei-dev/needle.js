@@ -143,18 +143,12 @@ const agent = await createNeedleTypeGPU({
     // root,
     // device,
     init: { device: { optionalFeatures: ["shader-f16"] } },
-    // Matvecs below this row count stay on CPU (default: 1024).
-    // minimumGpuRows: 0, // force every matvec onto WebGPU
-    // fusedAttention: true, // experimental resident int8 KV + attention
-    // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
-    // fusedRouting: true, // also fuse post-mHC Sinkhorn and nextX lanes
-    // residentLayers: true, // retain nextX and execute complete layers on GPU
-    // singleTokenSubmission: true, // diagnostic: encode all 27 layers before submit
+    execution: "resident", // or "adaptive" (default)
   },
 });
 ```
 
-The backend acquires its device through `tgpu.init()` or adopts one through `tgpu.initFromDevice()`.
+The backend acquires its device through `tgpu.init()` or adopts one through `tgpu.initFromDevice()`. `execution: "resident"` enables the complete compatible resident path and automatically falls back to adaptive operators for unsupported geometry or KV modes. Granular options such as `minimumGpuRows`, `fusedAttention`, `fusedMlp`, `fusedRouting`, `residentLayers`, and `singleTokenSubmission` remain available only for diagnostics.
 
 ### vgpu
 
@@ -203,7 +197,7 @@ Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.
 
 TypeGPU also has opt-in residency experiments. `fusedAttention` keeps Q/K/V, int8 KV state, attention, gating, and output projection on GPU; `fusedMlp` adds sandwich residuals and both 512-point Hadamard transforms; `fusedRouting` adds h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. The individual stages preserve greedy output but cost more than CPU while lane state still round-trips.
 
-`residentLayers: true` removes that round trip. It retains all 2,048 lane values and performs mHC pre-projections/gating, engram table gather/dequantization and convolution, attention, MLP, post-routing, final RMSNorm, and vocabulary projection on GPU. JavaScript computes only the four tiny n-gram hashes and uploads their row IDs; engram keys and values never leave GPU memory. Non-logit prefill steps have no layer/final readback. Raw generation can read the vocabulary once; high-level tool calling instead uploads the grammar's allowed token IDs and reads only the selected ID plus log probability.
+`execution: "resident"` removes that round trip. It retains all 2,048 lane values and performs mHC pre-projections/gating, engram table gather/dequantization and convolution, attention, MLP, post-routing, final RMSNorm, and vocabulary projection on GPU. JavaScript computes only the four tiny n-gram hashes and uploads their row IDs; engram keys and values never leave GPU memory. Non-logit prefill steps have no layer/final readback. Raw generation can read the vocabulary once; high-level tool calling instead uploads the grammar's allowed token IDs and reads only the selected ID plus log probability.
 
 The confidence path is resident too: eight online probe pools are updated from the embedding and every layer mean, and the final confidence projection returns one score. On the flashlight integration turn, CPU and resident TypeGPU produced the same call in 1,153 ms and 1,016 ms respectively; final confidence was 0.7526 vs 0.7481. Raw forced-all-GPU throughput measured **52.0 tok/s** on the standard prompt and 5.40 tok/s for a 98-token prompt, versus CPU's 41.6 and 4.68 tok/s in paired runs.
 

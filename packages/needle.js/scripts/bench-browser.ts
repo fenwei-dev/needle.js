@@ -11,6 +11,7 @@ export interface BrowserBenchOptions {
   prompt: string;
   modelUrl: string;
   minimumGpuRows?: number;
+  execution?: "adaptive" | "resident";
   fusedAttention?: boolean;
   fusedMlp?: boolean;
   fusedRouting?: boolean;
@@ -59,6 +60,9 @@ async function measureBackend(
               ...(options.minimumGpuRows === undefined
                 ? {}
                 : { minimumGpuRows: options.minimumGpuRows }),
+              ...(backend === "typegpu" && options.execution
+                ? { execution: options.execution }
+                : {}),
               ...(backend === "typegpu" && options.fusedAttention ? { fusedAttention: true } : {}),
               ...(backend === "typegpu" && options.fusedMlp ? { fusedMlp: true } : {}),
               ...(backend === "typegpu" && options.fusedRouting ? { fusedRouting: true } : {}),

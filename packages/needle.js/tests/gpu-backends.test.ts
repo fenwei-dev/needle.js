@@ -79,6 +79,7 @@ describe("optional GPU backends", () => {
     });
     try {
       expect(backend.kind).toBe("typegpu");
+      expect(backend.execution).toBe("adaptive");
       expect(backend.createFusedAttentionSession()).toBeUndefined();
       const input = new Float32Array(8);
       expect(await backend.matvec(matrix, input)).toHaveLength(1);
@@ -89,6 +90,21 @@ describe("optional GPU backends", () => {
       expect(batch).toHaveLength(2);
       expect(batch[0]).toHaveLength(1);
       expect(batch[1]).toHaveLength(1);
+    } finally {
+      backend.dispose();
+      mock.dispose();
+    }
+  });
+
+  test("TypeGPU exposes the consolidated resident policy", async () => {
+    const mock = await init();
+    const { weights } = fixture();
+    const backend = await TypeGPUBackend.create(weights, {
+      device: mock.gpu,
+      execution: "resident",
+    });
+    try {
+      expect(backend.execution).toBe("resident");
     } finally {
       backend.dispose();
       mock.dispose();

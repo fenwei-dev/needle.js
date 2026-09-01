@@ -1233,40 +1233,71 @@ export class WebGpuResidentSession implements FusedAttentionSession {
             { binding: 2, resource: { buffer: queryParams.buffer } },
           ],
         });
-      const kvGroup = this.#device.createBindGroup({
-        layout: pipelines.kv.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.#key } },
-          { binding: 1, resource: { buffer: this.#value } },
-          { binding: 2, resource: { buffer: norms.key } },
-          { binding: 3, resource: { buffer: keyCache } },
-          { binding: 4, resource: { buffer: valueCache } },
-          { binding: 5, resource: { buffer: keyScales } },
-          { binding: 6, resource: { buffer: valueScales } },
-          { binding: 7, resource: { buffer: kvParams.buffer } },
-        ],
-      });
-      const scoreGroup = this.#device.createBindGroup({
-        layout: pipelines.scores.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.#query } },
-          { binding: 1, resource: { buffer: keyCache } },
-          { binding: 2, resource: { buffer: keyScales } },
-          { binding: 3, resource: { buffer: attentionParams.buffer } },
-          { binding: 4, resource: { buffer: this.#scores } },
-        ],
-      });
-      const attentionGroup = this.#device.createBindGroup({
-        layout: pipelines.attention.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.#gate } },
-          { binding: 1, resource: { buffer: valueCache } },
-          { binding: 2, resource: { buffer: valueScales } },
-          { binding: 3, resource: { buffer: attentionParams.buffer } },
-          { binding: 4, resource: { buffer: this.#scores } },
-          { binding: 5, resource: { buffer: this.#attentionOutput } },
-        ],
-      });
+      const kvResources = {
+        key: this.#key,
+        value: this.#value,
+        keyNorm: norms.key,
+        keyCache,
+        valueCache,
+        keyScales,
+        valueScales,
+        params: kvParams.buffer,
+      };
+      const kvGroup =
+        this.#bindingFactory.createKv?.(kvResources) ??
+        this.#device.createBindGroup({
+          layout: pipelines.kv.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: kvResources.key } },
+            { binding: 1, resource: { buffer: kvResources.value } },
+            { binding: 2, resource: { buffer: kvResources.keyNorm } },
+            { binding: 3, resource: { buffer: kvResources.keyCache } },
+            { binding: 4, resource: { buffer: kvResources.valueCache } },
+            { binding: 5, resource: { buffer: kvResources.keyScales } },
+            { binding: 6, resource: { buffer: kvResources.valueScales } },
+            { binding: 7, resource: { buffer: kvResources.params } },
+          ],
+        });
+      const scoreResources = {
+        query: this.#query,
+        keyCache,
+        keyScales,
+        params: attentionParams.buffer,
+        scores: this.#scores,
+      };
+      const scoreGroup =
+        this.#bindingFactory.createScores?.(scoreResources) ??
+        this.#device.createBindGroup({
+          layout: pipelines.scores.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: scoreResources.query } },
+            { binding: 1, resource: { buffer: scoreResources.keyCache } },
+            { binding: 2, resource: { buffer: scoreResources.keyScales } },
+            { binding: 3, resource: { buffer: scoreResources.params } },
+            { binding: 4, resource: { buffer: scoreResources.scores } },
+          ],
+        });
+      const attentionResources = {
+        gate: this.#gate,
+        valueCache,
+        valueScales,
+        params: attentionParams.buffer,
+        scores: this.#scores,
+        output: this.#attentionOutput,
+      };
+      const attentionGroup =
+        this.#bindingFactory.createAttention?.(attentionResources) ??
+        this.#device.createBindGroup({
+          layout: pipelines.attention.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: attentionResources.gate } },
+            { binding: 1, resource: { buffer: attentionResources.valueCache } },
+            { binding: 2, resource: { buffer: attentionResources.valueScales } },
+            { binding: 3, resource: { buffer: attentionResources.params } },
+            { binding: 4, resource: { buffer: attentionResources.scores } },
+            { binding: 5, resource: { buffer: attentionResources.output } },
+          ],
+        });
       const mhcPreGroup = this.#device.createBindGroup({
         layout: pipelines.mhcPre.getBindGroupLayout(0),
         entries: [
@@ -1888,19 +1919,31 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       "BACKEND_UNAVAILABLE",
       "KV cache is missing",
     );
-    const group = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.#key } },
-        { binding: 1, resource: { buffer: this.#value } },
-        { binding: 2, resource: { buffer: this.#norms(layer).key } },
-        { binding: 3, resource: { buffer: keyCache } },
-        { binding: 4, resource: { buffer: valueCache } },
-        { binding: 5, resource: { buffer: keyScales } },
-        { binding: 6, resource: { buffer: valueScales } },
-        { binding: 7, resource: { buffer: this.#kvParams.buffer } },
-      ],
-    });
+    const resources = {
+      key: this.#key,
+      value: this.#value,
+      keyNorm: this.#norms(layer).key,
+      keyCache,
+      valueCache,
+      keyScales,
+      valueScales,
+      params: this.#kvParams.buffer,
+    };
+    const group =
+      this.#bindingFactory.createKv?.(resources) ??
+      this.#device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: resources.key } },
+          { binding: 1, resource: { buffer: resources.value } },
+          { binding: 2, resource: { buffer: resources.keyNorm } },
+          { binding: 3, resource: { buffer: resources.keyCache } },
+          { binding: 4, resource: { buffer: resources.valueCache } },
+          { binding: 5, resource: { buffer: resources.keyScales } },
+          { binding: 6, resource: { buffer: resources.valueScales } },
+          { binding: 7, resource: { buffer: resources.params } },
+        ],
+      });
     this.#kvGroups.set(layer, group);
     return group;
   }
@@ -1910,16 +1953,25 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     const keyCache = this.#keyCache;
     const keyScales = this.#keyScales;
     invariant(keyCache && keyScales, "BACKEND_UNAVAILABLE", "KV cache is missing");
-    this.#scoreGroup = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.#query } },
-        { binding: 1, resource: { buffer: keyCache } },
-        { binding: 2, resource: { buffer: keyScales } },
-        { binding: 3, resource: { buffer: this.#attentionParams.buffer } },
-        { binding: 4, resource: { buffer: this.#scores } },
-      ],
-    });
+    const resources = {
+      query: this.#query,
+      keyCache,
+      keyScales,
+      params: this.#attentionParams.buffer,
+      scores: this.#scores,
+    };
+    this.#scoreGroup =
+      this.#bindingFactory.createScores?.(resources) ??
+      this.#device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: resources.query } },
+          { binding: 1, resource: { buffer: resources.keyCache } },
+          { binding: 2, resource: { buffer: resources.keyScales } },
+          { binding: 3, resource: { buffer: resources.params } },
+          { binding: 4, resource: { buffer: resources.scores } },
+        ],
+      });
     return this.#scoreGroup;
   }
 
@@ -1928,17 +1980,27 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     const valueCache = this.#valueCache;
     const valueScales = this.#valueScales;
     invariant(valueCache && valueScales, "BACKEND_UNAVAILABLE", "KV cache is missing");
-    this.#attentionGroup = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.#gate } },
-        { binding: 1, resource: { buffer: valueCache } },
-        { binding: 2, resource: { buffer: valueScales } },
-        { binding: 3, resource: { buffer: this.#attentionParams.buffer } },
-        { binding: 4, resource: { buffer: this.#scores } },
-        { binding: 5, resource: { buffer: this.#attentionOutput } },
-      ],
-    });
+    const resources = {
+      gate: this.#gate,
+      valueCache,
+      valueScales,
+      params: this.#attentionParams.buffer,
+      scores: this.#scores,
+      output: this.#attentionOutput,
+    };
+    this.#attentionGroup =
+      this.#bindingFactory.createAttention?.(resources) ??
+      this.#device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: resources.gate } },
+          { binding: 1, resource: { buffer: resources.valueCache } },
+          { binding: 2, resource: { buffer: resources.valueScales } },
+          { binding: 3, resource: { buffer: resources.params } },
+          { binding: 4, resource: { buffer: resources.scores } },
+          { binding: 5, resource: { buffer: resources.output } },
+        ],
+      });
     return this.#attentionGroup;
   }
 

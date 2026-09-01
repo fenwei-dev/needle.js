@@ -6,7 +6,41 @@ export interface QueryBindingResources {
   readonly params: GPUBuffer;
 }
 
+export interface KvBindingResources {
+  readonly key: GPUBuffer;
+  readonly value: GPUBuffer;
+  readonly keyNorm: GPUBuffer;
+  readonly keyCache: GPUBuffer;
+  readonly valueCache: GPUBuffer;
+  readonly keyScales: GPUBuffer;
+  readonly valueScales: GPUBuffer;
+  readonly params: GPUBuffer;
+}
+
+export interface ScoreBindingResources {
+  readonly query: GPUBuffer;
+  readonly keyCache: GPUBuffer;
+  readonly keyScales: GPUBuffer;
+  readonly params: GPUBuffer;
+  readonly scores: GPUBuffer;
+}
+
+export interface AttentionBindingResources {
+  readonly gate: GPUBuffer;
+  readonly valueCache: GPUBuffer;
+  readonly valueScales: GPUBuffer;
+  readonly params: GPUBuffer;
+  readonly scores: GPUBuffer;
+  readonly output: GPUBuffer;
+}
+
 export interface ResidentBindingFactory {
   readonly queryLayout?: GPUBindGroupLayout;
+  readonly kvLayout?: GPUBindGroupLayout;
+  readonly scoresLayout?: GPUBindGroupLayout;
+  readonly attentionLayout?: GPUBindGroupLayout;
   createQuery?(resources: QueryBindingResources): GPUBindGroup;
+  createKv?(resources: KvBindingResources): GPUBindGroup;
+  createScores?(resources: ScoreBindingResources): GPUBindGroup;
+  createAttention?(resources: AttentionBindingResources): GPUBindGroup;
 }

@@ -77,10 +77,19 @@ export async function createResidentPipelines(
         label: `needle.resident.${label}.shader`,
         code: source,
       });
-      const explicitLayout =
-        label === "query" && bindings.queryLayout
-          ? device.createPipelineLayout({ bindGroupLayouts: [bindings.queryLayout] })
-          : undefined;
+      const bindGroupLayout =
+        label === "query"
+          ? bindings.queryLayout
+          : label === "kv"
+            ? bindings.kvLayout
+            : label === "scores"
+              ? bindings.scoresLayout
+              : label === "attention"
+                ? bindings.attentionLayout
+                : undefined;
+      const explicitLayout = bindGroupLayout
+        ? device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] })
+        : undefined;
       const descriptor: GPUComputePipelineDescriptor = {
         label: `needle.resident.${label}.pipeline`,
         layout: explicitLayout ?? "auto",

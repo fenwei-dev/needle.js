@@ -14,6 +14,7 @@ import { prepareCqActivation } from "../backends/cq.js";
 import { matrixParameters, webGpuMatrixData } from "../backends/webgpu-kernel.js";
 import { invariant } from "../errors.js";
 import type { CactLayer, CactWeights, CqMatrix } from "../model/cact.js";
+import type { ResidentBindingFactory } from "./bindings.js";
 import { supportsResidentExecution } from "./compatibility.js";
 import { ResidentConfidence } from "./confidence.js";
 import {
@@ -25,6 +26,7 @@ import {
   type ResidentParameterFactory,
 } from "./parameters.js";
 import { createResidentPipelines, type ResidentPipelines as Pipelines } from "./pipelines.js";
+import { createRawResourceFactory, type ResidentResourceFactory } from "./resources.js";
 import { ResidentTokenSelector } from "./selection.js";
 import {
   bufferSource,
@@ -34,7 +36,6 @@ import {
   floatBits,
   MAP_READ,
   STORAGE,
-  storageBuffer,
 } from "./webgpu.js";
 
 interface GpuMatrix {
@@ -90,6 +91,8 @@ export interface WebGpuResidentOptions {
   readonly residentLayers: boolean;
   readonly singleTokenSubmission: boolean;
   readonly parameterFactory?: ResidentParameterFactory;
+  readonly resourceFactory?: ResidentResourceFactory;
+  readonly bindingFactory?: ResidentBindingFactory;
 }
 
 export class WebGpuResidentSession implements FusedAttentionSession {
@@ -100,6 +103,8 @@ export class WebGpuResidentSession implements FusedAttentionSession {
   readonly #residentLayers: boolean;
   readonly #singleTokenSubmission: boolean;
   readonly #parameterFactory: ResidentParameterFactory;
+  readonly #resourceFactory: ResidentResourceFactory;
+  readonly #bindingFactory: ResidentBindingFactory;
   readonly #codebook: GPUBuffer;
   readonly #preparedInput: GPUBuffer;
   readonly #normalizedLanes: GPUBuffer;
@@ -198,76 +203,44 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     this.#fuseRouting = options.fuseRouting;
     this.#residentLayers = options.residentLayers;
     this.#singleTokenSubmission = options.singleTokenSubmission;
+    this.#resourceFactory = options.resourceFactory ?? createRawResourceFactory(device);
+    this.#bindingFactory = options.bindingFactory ?? {};
+    const f32 = (label: string, bytes: number, extraUsage = 0) =>
+      this.#resourceFactory.create("f32", label, bytes / 4, extraUsage);
+    const u32 = (label: string, bytes: number, extraUsage = 0) =>
+      this.#resourceFactory.create("u32", label, bytes / 4, extraUsage);
     const geometry = weights.geometry;
     const dimensionBytes = geometry.modelDimension * 4;
     const lanesBytes = geometry.mhcLanes * dimensionBytes;
     const keyValueBytes = geometry.numberOfKVHeads * geometry.headDimension * 4;
     this.#codebook = bufferWithData(device, "needle.attention.codebook", weights.codebook, STORAGE);
-    this.#preparedInput = storageBuffer(device, "needle.attention.input", dimensionBytes, COPY_DST);
-    this.#normalizedLanes = storageBuffer(device, "needle.attention.normalized-lanes", lanesBytes);
-    this.#preparedLanes = storageBuffer(device, "needle.attention.prepared-lanes", lanesBytes);
-    this.#attentionInput = storageBuffer(
-      device,
-      "needle.attention.normalized-input",
-      dimensionBytes,
-    );
-    this.#query = storageBuffer(device, "needle.attention.query", dimensionBytes);
-    this.#key = storageBuffer(device, "needle.attention.key", keyValueBytes);
-    this.#value = storageBuffer(device, "needle.attention.value", keyValueBytes);
-    this.#gate = storageBuffer(device, "needle.attention.gate", dimensionBytes);
-    this.#attentionOutput = storageBuffer(device, "needle.attention.output", dimensionBytes);
-    this.#scores = storageBuffer(
-      device,
-      "needle.attention.scores",
-      geometry.numberOfHeads * 512 * 4,
-    );
-    this.#preparedAttention = storageBuffer(device, "needle.attention.prepared", dimensionBytes);
-    this.#projected = storageBuffer(device, "needle.attention.projected", dimensionBytes, COPY_SRC);
-    this.#blockInput = storageBuffer(
-      device,
-      "needle.attention.block-input",
-      dimensionBytes,
-      COPY_DST,
-    );
-    this.#updateInput = storageBuffer(
-      device,
-      "needle.attention.update-input",
-      dimensionBytes,
-      COPY_DST | COPY_SRC,
-    );
-    this.#afterAttention = storageBuffer(device, "needle.attention.after", dimensionBytes);
-    this.#mlpInput = storageBuffer(device, "needle.attention.mlp-input", dimensionBytes);
-    this.#delta = storageBuffer(device, "needle.attention.delta", dimensionBytes, COPY_SRC);
-    this.#lanesInput = storageBuffer(
-      device,
-      "needle.attention.lanes",
-      lanesBytes,
-      COPY_DST | COPY_SRC,
-    );
-    this.#phiPre = storageBuffer(device, "needle.attention.phi-pre", 4 * 4);
-    this.#phiPost = storageBuffer(device, "needle.attention.phi-post", 4 * 4, COPY_DST);
-    this.#phiResidual = storageBuffer(device, "needle.attention.phi-residual", 16 * 4, COPY_DST);
-    this.#routingParams = storageBuffer(
-      device,
-      "needle.attention.routing-params",
-      23 * 4,
-      COPY_DST,
-    );
-    this.#hPreParams = storageBuffer(device, "needle.attention.h-pre-params", 6 * 4, COPY_DST);
-    this.#engramKey = storageBuffer(
-      device,
-      "needle.attention.engram-key",
-      dimensionBytes,
-      COPY_DST,
-    );
-    this.#engramValue = storageBuffer(
-      device,
-      "needle.attention.engram-value",
-      dimensionBytes,
-      COPY_DST,
-    );
-    this.#engramRowIds = storageBuffer(device, "needle.engram.row-ids", 4 * 4, COPY_DST);
-    this.#engramRowValid = storageBuffer(device, "needle.engram.row-valid", 4 * 4, COPY_DST);
+    this.#preparedInput = f32("needle.attention.input", dimensionBytes, COPY_DST);
+    this.#normalizedLanes = f32("needle.attention.normalized-lanes", lanesBytes);
+    this.#preparedLanes = f32("needle.attention.prepared-lanes", lanesBytes);
+    this.#attentionInput = f32("needle.attention.normalized-input", dimensionBytes);
+    this.#query = f32("needle.attention.query", dimensionBytes);
+    this.#key = f32("needle.attention.key", keyValueBytes);
+    this.#value = f32("needle.attention.value", keyValueBytes);
+    this.#gate = f32("needle.attention.gate", dimensionBytes);
+    this.#attentionOutput = f32("needle.attention.output", dimensionBytes);
+    this.#scores = f32("needle.attention.scores", geometry.numberOfHeads * 512 * 4);
+    this.#preparedAttention = f32("needle.attention.prepared", dimensionBytes);
+    this.#projected = f32("needle.attention.projected", dimensionBytes, COPY_SRC);
+    this.#blockInput = f32("needle.attention.block-input", dimensionBytes, COPY_DST);
+    this.#updateInput = f32("needle.attention.update-input", dimensionBytes, COPY_DST | COPY_SRC);
+    this.#afterAttention = f32("needle.attention.after", dimensionBytes);
+    this.#mlpInput = f32("needle.attention.mlp-input", dimensionBytes);
+    this.#delta = f32("needle.attention.delta", dimensionBytes, COPY_SRC);
+    this.#lanesInput = f32("needle.attention.lanes", lanesBytes, COPY_DST | COPY_SRC);
+    this.#phiPre = f32("needle.attention.phi-pre", 4 * 4);
+    this.#phiPost = f32("needle.attention.phi-post", 4 * 4, COPY_DST);
+    this.#phiResidual = f32("needle.attention.phi-residual", 16 * 4, COPY_DST);
+    this.#routingParams = f32("needle.attention.routing-params", 23 * 4, COPY_DST);
+    this.#hPreParams = f32("needle.attention.h-pre-params", 6 * 4, COPY_DST);
+    this.#engramKey = f32("needle.attention.engram-key", dimensionBytes, COPY_DST);
+    this.#engramValue = f32("needle.attention.engram-value", dimensionBytes, COPY_DST);
+    this.#engramRowIds = u32("needle.engram.row-ids", 4 * 4, COPY_DST);
+    this.#engramRowValid = u32("needle.engram.row-valid", 4 * 4, COPY_DST);
     this.#residentEngramConcatenated = [];
     this.#residentEngramPrepared = [];
     this.#residentEngramKeys = [];
@@ -277,14 +250,12 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     this.#residentEngramProjectionParams = [];
     const maximumOrder = Math.max(1, ...geometry.engramOrders);
     const engramDepth = (geometry.engramConvolutionTaps - 1) * maximumOrder + 1;
-    this.#residentEngramRing = storageBuffer(
-      device,
+    this.#residentEngramRing = f32(
       "needle.engram.ring",
       Math.max(4, geometry.engramLayers.length * engramDepth * dimensionBytes),
       COPY_DST,
     );
-    this.#residentEngramRingValid = storageBuffer(
-      device,
+    this.#residentEngramRingValid = u32(
       "needle.engram.ring-valid",
       Math.max(4, geometry.engramLayers.length * engramDepth * 4),
       COPY_DST,
@@ -293,22 +264,14 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       const engram = weights.engrams[site];
       invariant(engram, "INVALID_CACT", `Missing engram site ${site}`);
       this.#residentEngramConcatenated.push(
-        storageBuffer(device, `needle.engram.${site}.concatenated`, dimensionBytes),
+        f32(`needle.engram.${site}.concatenated`, dimensionBytes),
       );
-      this.#residentEngramPrepared.push(
-        storageBuffer(device, `needle.engram.${site}.prepared`, dimensionBytes),
-      );
-      this.#residentEngramKeys.push(
-        storageBuffer(device, `needle.engram.${site}.key`, dimensionBytes),
-      );
-      this.#residentEngramValueNow.push(
-        storageBuffer(device, `needle.engram.${site}.value-now`, dimensionBytes),
-      );
-      this.#residentEngramMixed.push(
-        storageBuffer(device, `needle.engram.${site}.mixed`, dimensionBytes),
-      );
+      this.#residentEngramPrepared.push(f32(`needle.engram.${site}.prepared`, dimensionBytes));
+      this.#residentEngramKeys.push(f32(`needle.engram.${site}.key`, dimensionBytes));
+      this.#residentEngramValueNow.push(f32(`needle.engram.${site}.value-now`, dimensionBytes));
+      this.#residentEngramMixed.push(f32(`needle.engram.${site}.mixed`, dimensionBytes));
       this.#residentEngramConvolutionParams.push(
-        storageBuffer(device, `needle.engram.${site}.convolution-params`, 16, COPY_DST),
+        u32(`needle.engram.${site}.convolution-params`, 16, COPY_DST),
       );
       const keyParams = bufferWithData(
         device,
@@ -324,21 +287,16 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       );
       this.#residentEngramProjectionParams.push(keyParams, valueParams);
     }
-    this.#nextLanes = storageBuffer(device, "needle.attention.next-lanes", lanesBytes, COPY_SRC);
+    this.#nextLanes = f32("needle.attention.next-lanes", lanesBytes, COPY_SRC);
     this.#finalNorm = bufferWithData(
       device,
       "needle.attention.final-norm",
       weights.finalNorm,
       STORAGE,
     );
-    this.#finalHidden = storageBuffer(device, "needle.attention.final-hidden", dimensionBytes);
-    this.#preparedFinal = storageBuffer(device, "needle.attention.prepared-final", dimensionBytes);
-    this.#logits = storageBuffer(
-      device,
-      "needle.attention.logits",
-      geometry.vocabularySize * 4,
-      COPY_SRC,
-    );
+    this.#finalHidden = f32("needle.attention.final-hidden", dimensionBytes);
+    this.#preparedFinal = f32("needle.attention.prepared-final", dimensionBytes);
+    this.#logits = f32("needle.attention.logits", geometry.vocabularySize * 4, COPY_SRC);
     this.#confidence = new ResidentConfidence(device, weights);
     this.#selector = new ResidentTokenSelector(device, this.#logits, geometry.vocabularySize);
     this.#staging = device.createBuffer({
@@ -351,11 +309,11 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     this.#queryParams = parameterFactory.query("needle.attention.query-params");
     this.#kvParams = parameterFactory.kv("needle.attention.kv-params");
     this.#attentionParams = parameterFactory.attention("needle.attention.params");
-    this.#layerParams = storageBuffer(device, "needle.attention.layer-params", 4, COPY_DST);
+    this.#layerParams = u32("needle.attention.layer-params", 4, COPY_DST);
     this.#projectionParams = Array.from({ length: 9 }, (_, index) =>
-      storageBuffer(device, `needle.attention.projection-params.${index}`, 32, COPY_DST),
+      u32(`needle.attention.projection-params.${index}`, 32, COPY_DST),
     );
-    this.#pipelines = createResidentPipelines(device);
+    this.#pipelines = createResidentPipelines(device, this.#bindingFactory);
   }
 
   reset(options: FusedAttentionResetOptions): boolean {
@@ -398,21 +356,25 @@ export class WebGpuResidentSession implements FusedAttentionSession {
         this.#kvAllocation *
         geometry.headDimension;
       const scaleElements = geometry.numberOfLayers * geometry.numberOfKVHeads * this.#kvAllocation;
-      this.#keyCache = storageBuffer(this.#device, "needle.attention.key-cache", cacheElements * 4);
-      this.#valueCache = storageBuffer(
-        this.#device,
+      this.#keyCache = this.#resourceFactory.create(
+        "i32",
+        "needle.attention.key-cache",
+        cacheElements,
+      );
+      this.#valueCache = this.#resourceFactory.create(
+        "i32",
         "needle.attention.value-cache",
-        cacheElements * 4,
+        cacheElements,
       );
-      this.#keyScales = storageBuffer(
-        this.#device,
+      this.#keyScales = this.#resourceFactory.create(
+        "f32",
         "needle.attention.key-scales",
-        scaleElements * 4,
+        scaleElements,
       );
-      this.#valueScales = storageBuffer(
-        this.#device,
+      this.#valueScales = this.#resourceFactory.create(
+        "f32",
         "needle.attention.value-scales",
-        scaleElements * 4,
+        scaleElements,
       );
       this.#queryGroups = new WeakMap();
       this.#kvGroups = new WeakMap();
@@ -1161,7 +1123,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       return buffer;
     };
     const makeDynamic = (label: string, bytes: number): GPUBuffer => {
-      const buffer = storageBuffer(this.#device, label, bytes, COPY_DST);
+      const buffer = this.#resourceFactory.create("f32", label, bytes / 4, COPY_DST);
       this.#residentSlotBuffers.push(buffer);
       return buffer;
     };
@@ -1257,14 +1219,20 @@ export class WebGpuResidentSession implements FusedAttentionSession {
         new Uint32Array([floatBits(layer.attentionGate)]),
       );
       const norms = this.#norms(layer);
-      const queryGroup = this.#device.createBindGroup({
-        layout: pipelines.query.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.#query } },
-          { binding: 1, resource: { buffer: norms.query } },
-          { binding: 2, resource: { buffer: queryParams.buffer } },
-        ],
-      });
+      const queryGroup =
+        this.#bindingFactory.createQuery?.({
+          query: this.#query,
+          normScale: norms.query,
+          params: queryParams.buffer,
+        }) ??
+        this.#device.createBindGroup({
+          layout: pipelines.query.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: this.#query } },
+            { binding: 1, resource: { buffer: norms.query } },
+            { binding: 2, resource: { buffer: queryParams.buffer } },
+          ],
+        });
       const kvGroup = this.#device.createBindGroup({
         layout: pipelines.kv.getBindGroupLayout(0),
         entries: [
@@ -1890,14 +1858,20 @@ export class WebGpuResidentSession implements FusedAttentionSession {
   #queryGroup(layer: CactLayer, pipeline: GPUComputePipeline): GPUBindGroup {
     const cached = this.#queryGroups.get(layer);
     if (cached) return cached;
-    const group = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.#query } },
-        { binding: 1, resource: { buffer: this.#norms(layer).query } },
-        { binding: 2, resource: { buffer: this.#queryParams.buffer } },
-      ],
-    });
+    const group =
+      this.#bindingFactory.createQuery?.({
+        query: this.#query,
+        normScale: this.#norms(layer).query,
+        params: this.#queryParams.buffer,
+      }) ??
+      this.#device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#query } },
+          { binding: 1, resource: { buffer: this.#norms(layer).query } },
+          { binding: 2, resource: { buffer: this.#queryParams.buffer } },
+        ],
+      });
     this.#queryGroups.set(layer, group);
     return group;
   }

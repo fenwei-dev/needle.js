@@ -142,16 +142,22 @@ src/resident/
   compatibility.ts  # geometry/KV feature gates
   webgpu.ts         # raw buffer and upload helpers
   parameters.ts     # neutral typed parameter contracts/raw factory
+  resources.ts      # neutral f32/u32/i32 allocation contracts
+  bindings.ts       # neutral typed binding contracts
 
 src/backends/typegpu.ts
   # TypeGPU root/device acquisition, lifecycle, adaptive operators
 src/backends/typegpu-parameters.ts
   # d.struct schemas and root-owned typed parameter buffers
+src/backends/typegpu-resources.ts
+  # d.arrayOf schemas and root-owned resident state
+src/backends/typegpu-bindings.ts
+  # typed query normalization/RoPE bind-group layout
 ```
 
 `WebGpuResidentSession` depends only on `GPUDevice`, parsed model weights, and neutral resident options. TypeGPU is the supported public integration.
 
-Dynamic query, KV, and attention parameter blocks now use TypeGPU `d.struct` schemas and root-owned typed storage buffers. The adapter supplies them through `ResidentParameterFactory`; the resident core sees named values and raw buffers, not TypeGPU implementation types. A raw factory remains available as the portability/reference implementation. This preserves the library-neutral execution graph while recovering TypeGPU's compile-time layout and typed-write benefits.
+Dynamic query, KV, and attention parameter blocks use TypeGPU `d.struct` schemas and root-owned typed storage buffers. Primary resident state—including lanes, QKV, attention/MLP intermediates, engram rings, logits, and int8-as-i32 KV storage—uses TypeGPU `d.arrayOf` schemas through a neutral resource factory. The adapter supplies them through `ResidentParameterFactory`; the resident core sees named values and raw buffers, not TypeGPU implementation types. A raw factory remains available as the portability/reference implementation. The query normalization/RoPE pass also uses a TypeGPU bind-group layout and explicit pipeline layout, while raw command encoding preserves the measured scheduling behavior. This recovers TypeGPU's compile-time layouts, typed writes, root ownership, and binding validation without coupling the execution graph or regressing throughput.
 
 ## Browser correctness suite
 

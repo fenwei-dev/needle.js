@@ -15,7 +15,9 @@ import {
   prepareCqActivation,
   prepareCqActivationCached,
 } from "./cq.js";
+import { createTypeGpuBindingFactory } from "./typegpu-bindings.js";
 import { createTypeGpuParameterFactory } from "./typegpu-parameters.js";
+import { createTypeGpuResourceFactory } from "./typegpu-resources.js";
 import {
   batchMatrixParameters,
   CQ_MATVEC_WGSL,
@@ -364,6 +366,8 @@ export class TypeGPUBackend implements InferenceBackend {
         residentLayers: this.#residentLayersEnabled,
         singleTokenSubmission: this.#singleTokenSubmission,
         parameterFactory: createTypeGpuParameterFactory(this.root),
+        resourceFactory: createTypeGpuResourceFactory(this.root),
+        bindingFactory: createTypeGpuBindingFactory(this.root),
       });
     }
     return this.#fusedAttentionSession;

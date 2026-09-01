@@ -2,6 +2,7 @@
 
 import { CQ_MATVEC_WGSL } from "../backends/webgpu-kernel.js";
 import { invariant } from "../errors.js";
+import type { ResidentBindingFactory } from "./bindings.js";
 import {
   ATTENTION_SCORES_WGSL,
   ATTENTION_SOFTMAX_GATE_WGSL,
@@ -45,7 +46,10 @@ export interface ResidentPipelines {
   readonly selectToken: GPUComputePipeline;
 }
 
-export async function createResidentPipelines(device: GPUDevice): Promise<ResidentPipelines> {
+export async function createResidentPipelines(
+  device: GPUDevice,
+  bindings: ResidentBindingFactory = {},
+): Promise<ResidentPipelines> {
   const descriptors = [
     ["cq", CQ_MATVEC_WGSL, "main"],
     ["query", QUERY_NORM_ROPE_WGSL, "query_norm_rope"],
@@ -73,9 +77,13 @@ export async function createResidentPipelines(device: GPUDevice): Promise<Reside
         label: `needle.resident.${label}.shader`,
         code: source,
       });
+      const explicitLayout =
+        label === "query" && bindings.queryLayout
+          ? device.createPipelineLayout({ bindGroupLayouts: [bindings.queryLayout] })
+          : undefined;
       const descriptor: GPUComputePipelineDescriptor = {
         label: `needle.resident.${label}.pipeline`,
-        layout: "auto",
+        layout: explicitLayout ?? "auto",
         compute: { module, entryPoint },
       };
       return device.createComputePipelineAsync

@@ -15,6 +15,7 @@ export interface BrowserBenchOptions {
   fusedMlp?: boolean;
   fusedRouting?: boolean;
   residentLayers?: boolean;
+  singleTokenSubmission?: boolean;
   collectConfidence?: boolean;
   toolParity?: boolean;
 }
@@ -62,6 +63,9 @@ async function measureBackend(
               ...(backend === "typegpu" && options.fusedMlp ? { fusedMlp: true } : {}),
               ...(backend === "typegpu" && options.fusedRouting ? { fusedRouting: true } : {}),
               ...(backend === "typegpu" && options.residentLayers ? { residentLayers: true } : {}),
+              ...(backend === "typegpu" && options.singleTokenSubmission
+                ? { singleTokenSubmission: true }
+                : {}),
             },
     });
   } catch (error) {

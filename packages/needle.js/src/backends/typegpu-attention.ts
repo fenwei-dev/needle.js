@@ -8,6 +8,7 @@ import type {
   FusedAttentionResult,
   FusedAttentionSession,
   ResidentLayerRequest,
+  ResidentTokenRequest,
   ResidentTokenSelection,
 } from "./backend.js";
 import { prepareCqActivation } from "./cq.js";
@@ -52,6 +53,28 @@ interface LayerNormBuffers {
   readonly d3: GPUBuffer;
 }
 
+interface ResidentLayerSlot {
+  readonly layer: CactLayer;
+  readonly projectionParams: readonly GPUBuffer[];
+  readonly queryParams: GPUBuffer;
+  readonly kvParams: GPUBuffer;
+  readonly attentionParams: GPUBuffer;
+  readonly projectionGroups: readonly GPUBindGroup[];
+  readonly phiGroups: readonly GPUBindGroup[];
+  readonly queryGroup: GPUBindGroup;
+  readonly kvGroup: GPUBindGroup;
+  readonly scoreGroup: GPUBindGroup;
+  readonly attentionGroup: GPUBindGroup;
+  readonly mhcPreGroup: GPUBindGroup;
+  readonly inputNormGroup: GPUBindGroup;
+  readonly sandwichGroup: GPUBindGroup;
+  readonly mlpGroup: GPUBindGroup;
+  readonly routingGroup: GPUBindGroup;
+  readonly engramKey?: GPUBuffer;
+  readonly engramValue?: GPUBuffer;
+  readonly engramGroup?: GPUBindGroup;
+}
+
 interface Pipelines {
   readonly cq: GPUComputePipeline;
   readonly query: GPUComputePipeline;
@@ -78,6 +101,7 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #fuseMlp: boolean;
   readonly #fuseRouting: boolean;
   readonly #residentLayers: boolean;
+  readonly #singleTokenSubmission: boolean;
   readonly #codebook: GPUBuffer;
   readonly #preparedInput: GPUBuffer;
   readonly #normalizedLanes: GPUBuffer;
@@ -156,6 +180,9 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   #confidenceHeadGroup: GPUBindGroup | undefined;
   #selectionGroup: GPUBindGroup | undefined;
   #inputNormGroups = new WeakMap<CactLayer, GPUBindGroup>();
+  #residentSlots: ResidentLayerSlot[] = [];
+  #residentSlotBuffers: GPUBuffer[] = [];
+  #residentSlotAllocation = -1;
   #residentEnabled = false;
   #collectConfidence = false;
   #kvAllocation = 0;
@@ -169,12 +196,14 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     fuseMlp: boolean,
     fuseRouting: boolean,
     residentLayers: boolean,
+    singleTokenSubmission: boolean,
   ) {
     this.#device = device;
     this.#weights = weights;
     this.#fuseMlp = fuseMlp;
     this.#fuseRouting = fuseRouting;
     this.#residentLayers = residentLayers;
+    this.#singleTokenSubmission = singleTokenSubmission;
     const geometry = weights.geometry;
     const dimensionBytes = geometry.modelDimension * 4;
     const lanesBytes = geometry.mhcLanes * dimensionBytes;
@@ -428,6 +457,87 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
 
   residentLayersEnabled(): boolean {
     return this.#residentEnabled;
+  }
+
+  async forwardResidentToken(request: ResidentTokenRequest): Promise<void> {
+    invariant(
+      this.#residentEnabled && !this.#disposed,
+      "BACKEND_UNAVAILABLE",
+      "Resident layers are off",
+    );
+    if (!this.#singleTokenSubmission) {
+      for (let layerIndex = 0; layerIndex < this.#weights.geometry.numberOfLayers; layerIndex++) {
+        const engramSite = this.#weights.geometry.engramLayers.indexOf(layerIndex);
+        await this.forwardResidentLayer({
+          layerIndex,
+          position: request.position,
+          ...(engramSite >= 0
+            ? {
+                engramKey: request.engramKeys[engramSite],
+                engramValue: request.engramValues[engramSite],
+              }
+            : {}),
+        });
+      }
+      return;
+    }
+    const pipelines = await this.#pipelines;
+    const slots = this.#ensureResidentSlots(pipelines);
+    const geometry = this.#weights.geometry;
+    const thetaBits = floatBits(geometry.ropeTheta);
+    const encoder = this.#device.createCommandEncoder({ label: "needle.resident-token.layers" });
+
+    for (let layerIndex = 0; layerIndex < slots.length; layerIndex++) {
+      const slot = slots[layerIndex];
+      invariant(slot, "INVALID_CACT", `Missing resident slot ${layerIndex}`);
+      this.#device.queue.writeBuffer(
+        slot.queryParams,
+        0,
+        bufferSource(new Uint32Array([request.position, thetaBits])),
+      );
+      this.#device.queue.writeBuffer(
+        slot.kvParams,
+        0,
+        bufferSource(
+          new Uint32Array([
+            layerIndex,
+            request.position,
+            this.#kvAllocation,
+            this.#sinkLength,
+            geometry.kvWindow,
+            geometry.numberOfKVHeads,
+            thetaBits,
+            0,
+          ]),
+        ),
+      );
+      this.#device.queue.writeBuffer(
+        slot.attentionParams,
+        0,
+        bufferSource(
+          new Uint32Array([
+            layerIndex,
+            request.position,
+            this.#kvAllocation,
+            this.#sinkLength,
+            geometry.kvWindow,
+            geometry.numberOfKVHeads,
+            geometry.numberOfHeads,
+            0,
+          ]),
+        ),
+      );
+      const engramSite = geometry.engramLayers.indexOf(layerIndex);
+      if (engramSite >= 0 && slot.engramKey && slot.engramValue) {
+        const key = request.engramKeys[engramSite];
+        const value = request.engramValues[engramSite];
+        invariant(key && value, "INVALID_CACT", `Missing engram values for layer ${layerIndex}`);
+        this.#device.queue.writeBuffer(slot.engramKey, 0, bufferSource(key));
+        this.#device.queue.writeBuffer(slot.engramValue, 0, bufferSource(value));
+      }
+      this.#encodeResidentSlot(encoder, slot, request.position, engramSite >= 0, pipelines);
+    }
+    this.#device.queue.submit([encoder.finish()]);
   }
 
   async forwardResidentLayer(request: ResidentLayerRequest): Promise<void> {
@@ -951,6 +1061,7 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     ]) {
       buffer.destroy();
     }
+    for (const buffer of this.#residentSlotBuffers) buffer.destroy();
     for (const buffer of [
       this.#confidenceProbes,
       this.#confidenceProjection,
@@ -976,6 +1087,395 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       norms.d2.destroy();
       norms.d3.destroy();
     }
+  }
+
+  #ensureResidentSlots(pipelines: Pipelines): readonly ResidentLayerSlot[] {
+    if (
+      this.#residentSlots.length === this.#weights.geometry.numberOfLayers &&
+      this.#residentSlotAllocation === this.#kvAllocation
+    ) {
+      return this.#residentSlots;
+    }
+    for (const buffer of this.#residentSlotBuffers) buffer.destroy();
+    this.#residentSlotBuffers = [];
+    this.#residentSlots = [];
+    this.#residentSlotAllocation = this.#kvAllocation;
+    const keyCache = this.#keyCache;
+    const valueCache = this.#valueCache;
+    const keyScales = this.#keyScales;
+    const valueScales = this.#valueScales;
+    invariant(
+      keyCache && valueCache && keyScales && valueScales,
+      "BACKEND_UNAVAILABLE",
+      "Resident KV buffers are missing",
+    );
+    const geometry = this.#weights.geometry;
+    const makeBuffer = (label: string, data: ArrayBufferView): GPUBuffer => {
+      const buffer = bufferWithData(this.#device, label, data, STORAGE);
+      this.#residentSlotBuffers.push(buffer);
+      return buffer;
+    };
+    const makeDynamic = (label: string, bytes: number): GPUBuffer => {
+      const buffer = storageBuffer(this.#device, label, bytes, COPY_DST);
+      this.#residentSlotBuffers.push(buffer);
+      return buffer;
+    };
+
+    for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
+      const layer = this.#weights.layers[layerIndex];
+      invariant(layer, "INVALID_CACT", `Missing resident layer ${layerIndex}`);
+      const projectionMatrices = [
+        layer.queryProjection,
+        layer.keyProjection,
+        layer.valueProjection,
+        layer.gateProjection,
+        layer.outputProjection,
+      ] as const;
+      const projectionInputs = [
+        this.#preparedInput,
+        this.#preparedInput,
+        this.#preparedInput,
+        this.#preparedInput,
+        this.#preparedAttention,
+      ] as const;
+      const projectionOutputs = [
+        this.#query,
+        this.#key,
+        this.#value,
+        this.#gate,
+        this.#projected,
+      ] as const;
+      const projectionParams: GPUBuffer[] = [];
+      const projectionGroups: GPUBindGroup[] = [];
+      for (let index = 0; index < projectionMatrices.length; index++) {
+        const matrix = projectionMatrices[index];
+        const input = projectionInputs[index];
+        const output = projectionOutputs[index];
+        invariant(matrix && input && output, "INVALID_CACT", "Resident projection is missing");
+        const params = makeBuffer(
+          `needle.resident.${layerIndex}.projection.${index}`,
+          matrixParameters(matrix, 0, matrix.outputSize),
+        );
+        projectionParams.push(params);
+        projectionGroups.push(
+          this.#createProjectionGroup(matrix, input, params, output, pipelines.cq),
+        );
+      }
+      const phiMatrices = [
+        this.#weights.mhcPhiPre,
+        this.#weights.mhcPhiPost,
+        this.#weights.mhcPhiResidual,
+      ] as const;
+      const phiRanges = [
+        { rowStart: layerIndex * 4, rowCount: 4 },
+        { rowStart: layerIndex * 4, rowCount: 4 },
+        { rowStart: layerIndex * 16, rowCount: 16 },
+      ] as const;
+      const phiOutputs = [this.#phiPre, this.#phiPost, this.#phiResidual] as const;
+      const phiGroups: GPUBindGroup[] = [];
+      for (let index = 0; index < phiMatrices.length; index++) {
+        const matrix = phiMatrices[index];
+        const range = phiRanges[index];
+        const output = phiOutputs[index];
+        invariant(matrix && range && output, "INVALID_CACT", "Resident phi projection is missing");
+        const params = makeBuffer(
+          `needle.resident.${layerIndex}.phi.${index}`,
+          matrixParameters(matrix, range.rowStart, range.rowCount),
+        );
+        projectionParams.push(params);
+        phiGroups.push(
+          this.#createProjectionGroup(matrix, this.#preparedLanes, params, output, pipelines.cq),
+        );
+      }
+      const queryParams = makeDynamic(`needle.resident.${layerIndex}.query-params`, 8);
+      const kvParams = makeDynamic(`needle.resident.${layerIndex}.kv-params`, 32);
+      const attentionParams = makeDynamic(`needle.resident.${layerIndex}.attention-params`, 32);
+      const hPre = new Float32Array(6);
+      hPre[0] = this.#weights.mhcAPre[layerIndex] ?? 0;
+      hPre[1] = layerIndex % 4;
+      hPre.set(this.#weights.mhcBPre.subarray(layerIndex * 4, layerIndex * 4 + 4), 2);
+      const hPreParams = makeBuffer(`needle.resident.${layerIndex}.h-pre`, hPre);
+      const routing = new Float32Array(23);
+      routing[0] = this.#weights.mhcAPost[layerIndex] ?? 0;
+      routing[1] = this.#weights.mhcAResidual[layerIndex] ?? 0;
+      routing[2] = layerIndex % 4;
+      routing.set(this.#weights.mhcBPost.subarray(layerIndex * 4, layerIndex * 4 + 4), 3);
+      routing.set(this.#weights.mhcBResidual.subarray(layerIndex * 16, layerIndex * 16 + 16), 7);
+      const routingParams = makeBuffer(`needle.resident.${layerIndex}.routing`, routing);
+      const layerParams = makeBuffer(
+        `needle.resident.${layerIndex}.layer`,
+        new Uint32Array([floatBits(layer.attentionGate)]),
+      );
+      const norms = this.#norms(layer);
+      const queryGroup = this.#device.createBindGroup({
+        layout: pipelines.query.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#query } },
+          { binding: 1, resource: { buffer: norms.query } },
+          { binding: 2, resource: { buffer: queryParams } },
+        ],
+      });
+      const kvGroup = this.#device.createBindGroup({
+        layout: pipelines.kv.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#key } },
+          { binding: 1, resource: { buffer: this.#value } },
+          { binding: 2, resource: { buffer: norms.key } },
+          { binding: 3, resource: { buffer: keyCache } },
+          { binding: 4, resource: { buffer: valueCache } },
+          { binding: 5, resource: { buffer: keyScales } },
+          { binding: 6, resource: { buffer: valueScales } },
+          { binding: 7, resource: { buffer: kvParams } },
+        ],
+      });
+      const scoreGroup = this.#device.createBindGroup({
+        layout: pipelines.scores.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#query } },
+          { binding: 1, resource: { buffer: keyCache } },
+          { binding: 2, resource: { buffer: keyScales } },
+          { binding: 3, resource: { buffer: attentionParams } },
+          { binding: 4, resource: { buffer: this.#scores } },
+        ],
+      });
+      const attentionGroup = this.#device.createBindGroup({
+        layout: pipelines.attention.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#gate } },
+          { binding: 1, resource: { buffer: valueCache } },
+          { binding: 2, resource: { buffer: valueScales } },
+          { binding: 3, resource: { buffer: attentionParams } },
+          { binding: 4, resource: { buffer: this.#scores } },
+          { binding: 5, resource: { buffer: this.#attentionOutput } },
+        ],
+      });
+      const mhcPreGroup = this.#device.createBindGroup({
+        layout: pipelines.mhcPre.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#lanesInput } },
+          { binding: 1, resource: { buffer: this.#phiPre } },
+          { binding: 2, resource: { buffer: hPreParams } },
+          { binding: 3, resource: { buffer: this.#updateInput } },
+        ],
+      });
+      const inputNormGroup = this.#device.createBindGroup({
+        layout: pipelines.norm512.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#blockInput } },
+          { binding: 1, resource: { buffer: norms.input } },
+          { binding: 2, resource: { buffer: this.#attentionInput } },
+        ],
+      });
+      const sandwichGroup = this.#device.createBindGroup({
+        layout: pipelines.sandwich.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#projected } },
+          { binding: 1, resource: { buffer: norms.postAttention } },
+          { binding: 2, resource: { buffer: norms.preHadamard } },
+          { binding: 3, resource: { buffer: this.#blockInput } },
+          { binding: 4, resource: { buffer: norms.d1 } },
+          { binding: 5, resource: { buffer: layerParams } },
+          { binding: 6, resource: { buffer: this.#afterAttention } },
+          { binding: 7, resource: { buffer: this.#mlpInput } },
+        ],
+      });
+      const mlpGroup = this.#device.createBindGroup({
+        layout: pipelines.mlp.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#mlpInput } },
+          { binding: 1, resource: { buffer: norms.d2 } },
+          { binding: 2, resource: { buffer: norms.d3 } },
+          { binding: 3, resource: { buffer: this.#afterAttention } },
+          { binding: 4, resource: { buffer: this.#updateInput } },
+          { binding: 5, resource: { buffer: this.#delta } },
+        ],
+      });
+      const routingGroup = this.#device.createBindGroup({
+        layout: pipelines.routing.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#lanesInput } },
+          { binding: 1, resource: { buffer: this.#phiPost } },
+          { binding: 2, resource: { buffer: this.#phiResidual } },
+          { binding: 3, resource: { buffer: this.#delta } },
+          { binding: 4, resource: { buffer: routingParams } },
+          { binding: 5, resource: { buffer: this.#nextLanes } },
+        ],
+      });
+      let engramKey: GPUBuffer | undefined;
+      let engramValue: GPUBuffer | undefined;
+      let engramGroup: GPUBindGroup | undefined;
+      if (geometry.engramLayers.includes(layerIndex)) {
+        engramKey = makeDynamic(`needle.resident.${layerIndex}.engram-key`, 512 * 4);
+        engramValue = makeDynamic(`needle.resident.${layerIndex}.engram-value`, 512 * 4);
+        engramGroup = this.#device.createBindGroup({
+          layout: pipelines.engram.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: this.#updateInput } },
+            { binding: 1, resource: { buffer: engramKey } },
+            { binding: 2, resource: { buffer: engramValue } },
+            { binding: 3, resource: { buffer: this.#blockInput } },
+          ],
+        });
+      }
+      this.#residentSlots.push({
+        layer,
+        projectionParams,
+        queryParams,
+        kvParams,
+        attentionParams,
+        projectionGroups,
+        phiGroups,
+        queryGroup,
+        kvGroup,
+        scoreGroup,
+        attentionGroup,
+        mhcPreGroup,
+        inputNormGroup,
+        sandwichGroup,
+        mlpGroup,
+        routingGroup,
+        ...(engramKey && engramValue && engramGroup ? { engramKey, engramValue, engramGroup } : {}),
+      });
+    }
+    return this.#residentSlots;
+  }
+
+  #encodeResidentSlot(
+    encoder: GPUCommandEncoder,
+    slot: ResidentLayerSlot,
+    position: number,
+    hasEngram: boolean,
+    pipelines: Pipelines,
+  ): void {
+    const geometry = this.#weights.geometry;
+    const rmsPass = encoder.beginComputePass({ label: "needle.resident-token.rms-lanes" });
+    rmsPass.setPipeline(pipelines.rmsLanes);
+    rmsPass.setBindGroup(0, this.#getRmsLanesGroup(pipelines.rmsLanes));
+    rmsPass.dispatchWorkgroups(1);
+    rmsPass.end();
+    const prepareLanes = encoder.beginComputePass({ label: "needle.resident-token.prepare-lanes" });
+    prepareLanes.setPipeline(pipelines.prepare);
+    prepareLanes.setBindGroup(0, this.#getPrepareLanesGroup(pipelines.prepare));
+    prepareLanes.dispatchWorkgroups(16);
+    prepareLanes.end();
+    const phiPass = encoder.beginComputePass({ label: "needle.resident-token.phi" });
+    phiPass.setPipeline(pipelines.cq);
+    for (let index = 0; index < slot.phiGroups.length; index++) {
+      phiPass.setBindGroup(0, slot.phiGroups[index] as GPUBindGroup);
+      phiPass.dispatchWorkgroups(index === 2 ? 16 : 4);
+    }
+    phiPass.end();
+    const prePass = encoder.beginComputePass({ label: "needle.resident-token.mhc-pre" });
+    prePass.setPipeline(pipelines.mhcPre);
+    prePass.setBindGroup(0, slot.mhcPreGroup);
+    prePass.dispatchWorkgroups(1);
+    prePass.end();
+    if (hasEngram && slot.engramGroup) {
+      const engramPass = encoder.beginComputePass({ label: "needle.resident-token.engram" });
+      engramPass.setPipeline(pipelines.engram);
+      engramPass.setBindGroup(0, slot.engramGroup);
+      engramPass.dispatchWorkgroups(1);
+      engramPass.end();
+    } else {
+      encoder.copyBufferToBuffer(this.#updateInput, 0, this.#blockInput, 0, 512 * 4);
+    }
+    const normPass = encoder.beginComputePass({ label: "needle.resident-token.input-norm" });
+    normPass.setPipeline(pipelines.norm512);
+    normPass.setBindGroup(0, slot.inputNormGroup);
+    normPass.dispatchWorkgroups(1);
+    normPass.end();
+    const prepareInput = encoder.beginComputePass({ label: "needle.resident-token.prepare-input" });
+    prepareInput.setPipeline(pipelines.prepare);
+    prepareInput.setBindGroup(0, this.#getPrepareInputGroup(pipelines.prepare));
+    prepareInput.dispatchWorkgroups(4);
+    prepareInput.end();
+    const projections = encoder.beginComputePass({ label: "needle.resident-token.projections" });
+    projections.setPipeline(pipelines.cq);
+    const projectionRows = [512, 256, 256, 512] as const;
+    for (let index = 0; index < 4; index++) {
+      projections.setBindGroup(0, slot.projectionGroups[index] as GPUBindGroup);
+      projections.dispatchWorkgroups(projectionRows[index] ?? 0);
+    }
+    projections.end();
+    const queryPass = encoder.beginComputePass({ label: "needle.resident-token.query" });
+    queryPass.setPipeline(pipelines.query);
+    queryPass.setBindGroup(0, slot.queryGroup);
+    queryPass.dispatchWorkgroups(8);
+    queryPass.end();
+    const kvPass = encoder.beginComputePass({ label: "needle.resident-token.kv" });
+    kvPass.setPipeline(pipelines.kv);
+    kvPass.setBindGroup(0, slot.kvGroup);
+    kvPass.dispatchWorkgroups(4);
+    kvPass.end();
+    const prefixCount = Math.min(this.#sinkLength, position + 1);
+    const recentLow = Math.max(prefixCount, position + 1 - geometry.kvWindow);
+    const attentionCount = prefixCount + position + 1 - recentLow;
+    const scorePass = encoder.beginComputePass({ label: "needle.resident-token.scores" });
+    scorePass.setPipeline(pipelines.scores);
+    scorePass.setBindGroup(0, slot.scoreGroup);
+    scorePass.dispatchWorkgroups(8, attentionCount);
+    scorePass.end();
+    const attentionPass = encoder.beginComputePass({ label: "needle.resident-token.attention" });
+    attentionPass.setPipeline(pipelines.attention);
+    attentionPass.setBindGroup(0, slot.attentionGroup);
+    attentionPass.dispatchWorkgroups(8);
+    attentionPass.end();
+    const prepareOutput = encoder.beginComputePass({
+      label: "needle.resident-token.prepare-output",
+    });
+    prepareOutput.setPipeline(pipelines.prepare);
+    prepareOutput.setBindGroup(0, this.#getPrepareGroup(pipelines.prepare));
+    prepareOutput.dispatchWorkgroups(4);
+    prepareOutput.end();
+    const outputPass = encoder.beginComputePass({ label: "needle.resident-token.output" });
+    outputPass.setPipeline(pipelines.cq);
+    outputPass.setBindGroup(0, slot.projectionGroups[4] as GPUBindGroup);
+    outputPass.dispatchWorkgroups(512);
+    outputPass.end();
+    const sandwich = encoder.beginComputePass({ label: "needle.resident-token.sandwich" });
+    sandwich.setPipeline(pipelines.sandwich);
+    sandwich.setBindGroup(0, slot.sandwichGroup);
+    sandwich.dispatchWorkgroups(1);
+    sandwich.end();
+    const mlp = encoder.beginComputePass({ label: "needle.resident-token.mlp" });
+    mlp.setPipeline(pipelines.mlp);
+    mlp.setBindGroup(0, slot.mlpGroup);
+    mlp.dispatchWorkgroups(1);
+    mlp.end();
+    const routing = encoder.beginComputePass({ label: "needle.resident-token.routing" });
+    routing.setPipeline(pipelines.routing);
+    routing.setBindGroup(0, slot.routingGroup);
+    routing.dispatchWorkgroups(1);
+    routing.end();
+    if (this.#collectConfidence) {
+      const confidence = encoder.beginComputePass({ label: "needle.resident-token.confidence" });
+      confidence.setPipeline(pipelines.confidencePool);
+      confidence.setBindGroup(0, this.#getConfidenceNextGroup(pipelines.confidencePool));
+      confidence.dispatchWorkgroups(1);
+      confidence.end();
+    }
+    encoder.copyBufferToBuffer(this.#nextLanes, 0, this.#lanesInput, 0, 2048 * 4);
+  }
+
+  #createProjectionGroup(
+    matrix: CqMatrix,
+    input: GPUBuffer,
+    params: GPUBuffer,
+    output: GPUBuffer,
+    pipeline: GPUComputePipeline,
+  ): GPUBindGroup {
+    const gpuMatrix = this.#gpuMatrix(matrix);
+    return this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: gpuMatrix.packed } },
+        { binding: 1, resource: { buffer: gpuMatrix.norms } },
+        { binding: 2, resource: { buffer: input } },
+        { binding: 3, resource: { buffer: this.#codebook } },
+        { binding: 4, resource: { buffer: params } },
+        { binding: 5, resource: { buffer: output } },
+      ],
+    });
   }
 
   #encodeResidentFinal(encoder: GPUCommandEncoder, pipelines: Pipelines): void {

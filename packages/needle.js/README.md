@@ -149,6 +149,7 @@ const agent = await createNeedleTypeGPU({
     // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
     // fusedRouting: true, // also fuse post-mHC Sinkhorn and nextX lanes
     // residentLayers: true, // retain nextX and execute complete layers on GPU
+    // singleTokenSubmission: true, // diagnostic: encode all 27 layers before submit
   },
 });
 ```

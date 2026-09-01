@@ -312,29 +312,37 @@ export class NeedleRuntime {
     let residentLogits: Float32Array | null | undefined;
     const usingResidentLayers = Boolean(
       residentLayers &&
-        this.#fusedAttention?.forwardResidentLayer &&
-        this.#fusedAttention.finishResidentToken,
+        (this.#fusedAttention?.forwardResidentToken ||
+          this.#fusedAttention?.forwardResidentLayer) &&
+        this.#fusedAttention?.finishResidentToken,
     );
 
-    if (
-      usingResidentLayers &&
-      this.#fusedAttention?.forwardResidentLayer &&
-      this.#fusedAttention.finishResidentToken
-    ) {
-      for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
-        if (options.signal?.aborted)
-          throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
-            cause: options.signal.reason,
+    if (usingResidentLayers && this.#fusedAttention?.finishResidentToken) {
+      if (this.#fusedAttention.forwardResidentToken) {
+        for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
+          if (options.signal?.aborted)
+            throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
+              cause: options.signal.reason,
+            });
+          this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
+        }
+        await this.#fusedAttention.forwardResidentToken({ position, engramKeys, engramValues });
+      } else if (this.#fusedAttention.forwardResidentLayer) {
+        for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
+          if (options.signal?.aborted)
+            throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
+              cause: options.signal.reason,
+            });
+          this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
+          const engramSite = geometry.engramLayers.indexOf(layerIndex);
+          await this.#fusedAttention.forwardResidentLayer({
+            layerIndex,
+            position,
+            ...(engramSite >= 0
+              ? { engramKey: engramKeys[engramSite], engramValue: engramValues[engramSite] }
+              : {}),
           });
-        this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
-        const engramSite = geometry.engramLayers.indexOf(layerIndex);
-        await this.#fusedAttention.forwardResidentLayer({
-          layerIndex,
-          position,
-          ...(engramSite >= 0
-            ? { engramKey: engramKeys[engramSite], engramValue: engramValues[engramSite] }
-            : {}),
-        });
+        }
       }
       if (
         this.#selectionRequest !== undefined &&

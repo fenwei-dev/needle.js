@@ -29,6 +29,7 @@ interface CliOptions {
   fusedMlp: boolean;
   fusedRouting: boolean;
   residentLayers: boolean;
+  singleTokenSubmission: boolean;
   collectConfidence: boolean;
   toolParity: boolean;
 }
@@ -50,6 +51,7 @@ function parseArgs(argv: string[]): CliOptions {
     fusedMlp: false,
     fusedRouting: false,
     residentLayers: false,
+    singleTokenSubmission: false,
     collectConfidence: false,
     toolParity: false,
   };
@@ -72,6 +74,12 @@ function parseArgs(argv: string[]): CliOptions {
       options.fusedMlp = true;
       options.fusedRouting = true;
       options.residentLayers = true;
+    } else if (argument === "--single-submission") {
+      options.fusedAttention = true;
+      options.fusedMlp = true;
+      options.fusedRouting = true;
+      options.residentLayers = true;
+      options.singleTokenSubmission = true;
     } else if (argument === "--backends" && next) {
       options.backends = next.split(",").map((name) => name.trim()) as BackendName[];
       index++;
@@ -114,6 +122,7 @@ Options:
   --fused-mlp                   Also fuse sandwich residuals and Hadamard MLP
   --fused-routing               Also fuse post-mHC routing and nextX lanes
   --resident-layers             Retain lanes and run full layers without readback
+  --single-submission           Submit all 27 resident layers together (diagnostic)
   --confidence                  Probe CPU/GPU confidence pooling on the prompt
   --tool-parity                 Run the constrained flashlight integration turn
   --json                        Print machine-readable JSON
@@ -258,6 +267,7 @@ try {
     ...(cli.fusedMlp ? { fusedMlp: true } : {}),
     ...(cli.fusedRouting ? { fusedRouting: true } : {}),
     ...(cli.residentLayers ? { residentLayers: true } : {}),
+    ...(cli.singleTokenSubmission ? { singleTokenSubmission: true } : {}),
     ...(cli.collectConfidence ? { collectConfidence: true } : {}),
     ...(cli.toolParity ? { toolParity: true } : {}),
   };
@@ -289,6 +299,7 @@ const report = {
     fusedMlp: cli.fusedMlp,
     fusedRouting: cli.fusedRouting,
     residentLayers: cli.residentLayers,
+    singleTokenSubmission: cli.singleTokenSubmission,
     collectConfidence: cli.collectConfidence,
     toolParity: cli.toolParity,
   },

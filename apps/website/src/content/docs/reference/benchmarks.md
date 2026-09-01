@@ -66,6 +66,10 @@ For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok
 
 The resident path matched CPU greedy text in both workloads.
 
+### One submission per token experiment
+
+A token-level command builder assigns independent parameter buffers and bind groups to all 27 layers, allowing one `queue.submit()` after every layer has been encoded. Output remained identical, but WKWebView throughput fell from **52.5 tok/s** with immediate per-layer submissions to about **38.0 tok/s**. Immediate submission overlaps JavaScript command encoding with GPU execution; one delayed submission loses that overlap. The implementation remains available as `singleTokenSubmission: true` for cross-device diagnostics, but is not the default.
+
 ### Resident tool selection and confidence
 
 For `Needle.complete()`, JavaScript still advances the byte grammar, but it sends only the currently allowed token IDs to WebGPU. A 256-lane reduction selects the best allowed token while computing log-sum-exp over the full vocabulary, and reads back an 8-byte token/log-probability pair instead of 32 KB of logits.
@@ -105,6 +109,9 @@ bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers
 
 # Compare resident confidence and constrained tool selection
 bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers --confidence --tool-parity
+
+# Diagnostic one-submission token builder
+bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers --single-submission
 ```
 
 The harness bundles `scripts/bench-browser.ts`, serves it locally, and drives `Bun.WebView` with the `webkit` backend so Chrome is not launched with `--disable-gpu`.

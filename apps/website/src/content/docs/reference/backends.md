@@ -39,6 +39,7 @@ const agent = await createNeedleTypeGPU({
     // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
     // fusedRouting: true, // also fuse post-mHC Sinkhorn and nextX lanes
     // residentLayers: true, // retain nextX and run complete layers on GPU
+    // singleTokenSubmission: true, // diagnostic: one submit for all layers
   },
 });
 ```
@@ -116,6 +117,8 @@ The individual fusion options are experimental. Small-context WebGPU attention i
 3. optional engram injection and input RMSNorm;
 4. resident attention/KV, output projection, sandwich residual, and MLP;
 5. h-post, Sinkhorn routing, and `nextX`, copied into the next layer's lane buffer.
+
+By default each encoded layer is submitted immediately. This allows WebKit to execute GPU work while JavaScript encodes the following layer. `singleTokenSubmission: true` instead gives every layer distinct parameter slots and submits all 27 command sequences together. It is correct but diagnostic: the standard benchmark fell from 52.5 to 38.0 tok/s because delaying submission removed CPU/GPU overlap.
 
 After layer 27, final lane averaging, RMSNorm, activation preparation, and vocabulary projection remain on GPU. Non-logit prefill steps do not read layer/final state at all. Raw callers may read all 8,192 logits once; high-level tool calling builds an ascending list of grammar-allowed token IDs in JavaScript, uploads that list, and receives only the selected ID and full-vocabulary log probability.
 

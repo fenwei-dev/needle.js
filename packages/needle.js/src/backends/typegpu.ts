@@ -77,6 +77,8 @@ export interface TypeGPUBackendOptions {
   readonly fusedRouting?: boolean;
   /** Retain four-lane state and execute complete layers without readback. */
   readonly residentLayers?: boolean;
+  /** Encode all 27 resident layers before one queue submission (diagnostic). */
+  readonly singleTokenSubmission?: boolean;
 }
 
 /** CQ matvec acceleration using a device initialized and owned through TypeGPU. */
@@ -103,6 +105,7 @@ export class TypeGPUBackend implements InferenceBackend {
   readonly #fusedMlpEnabled: boolean;
   readonly #fusedRoutingEnabled: boolean;
   readonly #residentLayersEnabled: boolean;
+  readonly #singleTokenSubmission: boolean;
   #fusedAttentionSession: TypeGPUFusedAttentionSession | undefined;
   #batchPipeline: GPUComputePipeline | undefined;
   #batchPipelinePromise: Promise<GPUComputePipeline> | undefined;
@@ -119,6 +122,7 @@ export class TypeGPUBackend implements InferenceBackend {
     fusedMlp: boolean,
     fusedRouting: boolean,
     residentLayers: boolean,
+    singleTokenSubmission: boolean,
   ) {
     this.root = root;
     this.device = root.device;
@@ -130,6 +134,7 @@ export class TypeGPUBackend implements InferenceBackend {
     this.#fusedMlpEnabled = fusedMlp;
     this.#fusedRoutingEnabled = fusedRouting;
     this.#residentLayersEnabled = residentLayers;
+    this.#singleTokenSubmission = singleTokenSubmission;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
@@ -193,6 +198,7 @@ export class TypeGPUBackend implements InferenceBackend {
         options.fusedMlp ?? options.fusedRouting ?? options.residentLayers ?? false,
         options.fusedRouting ?? options.residentLayers ?? false,
         options.residentLayers ?? false,
+        options.singleTokenSubmission ?? false,
       );
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
@@ -351,6 +357,7 @@ export class TypeGPUBackend implements InferenceBackend {
         this.#fusedMlpEnabled,
         this.#fusedRoutingEnabled,
         this.#residentLayersEnabled,
+        this.#singleTokenSubmission,
       );
     }
     return this.#fusedAttentionSession;

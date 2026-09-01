@@ -160,6 +160,7 @@ export class NeedleRuntime {
         maximumLength: options.maximumLength,
         sinkLength: this.#sinkLength,
         kvCache: this.options.kvCache ?? "int8",
+        collectConfidence: this.options.collectConfidence !== false,
       }) ?? false;
     if (this.#fusedAttentionEnabled) {
       this.#keyCacheInt8 = undefined;
@@ -259,182 +260,206 @@ export class NeedleRuntime {
     for (let lane = 0; lane < lanes; lane++) x.set(scaledEmbedding, lane * dimension);
     const [engramKeys, engramValues] = await this.#engramStep();
     const attentionWidth = geometry.numberOfHeads * geometry.headDimension;
+    const residentLayers = (await this.#fusedAttention?.beginResidentToken?.(x)) ?? false;
 
-    for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
-      if (options.signal?.aborted)
-        throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
-          cause: options.signal.reason,
-        });
-      this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
-      const layer = this.weights.layers[layerIndex];
-      invariant(layer !== undefined, "INVALID_CACT", `Missing layer ${layerIndex}`);
-
-      const normalizedLanes = rmsUnit(x);
-      const [phiPre, phiPost, phiResidual] = await this.#matvecBatch([
-        {
-          matrix: this.weights.mhcPhiPre,
-          input: normalizedLanes,
-          range: { rowStart: layerIndex * lanes, rowCount: lanes },
-        },
-        {
-          matrix: this.weights.mhcPhiPost,
-          input: normalizedLanes,
-          range: { rowStart: layerIndex * lanes, rowCount: lanes },
-        },
-        {
-          matrix: this.weights.mhcPhiResidual,
-          input: normalizedLanes,
-          range: { rowStart: layerIndex * lanes * lanes, rowCount: lanes * lanes },
-        },
-      ] as const);
-
-      const hPre = new Float32Array(lanes);
-      const ownLane = layerIndex % lanes;
-      for (let lane = 0; lane < lanes; lane++) {
-        const offset = lane === ownLane ? 4 : -4;
-        hPre[lane] = sigmoid(
-          (this.weights.mhcAPre[layerIndex] ?? 0) * (phiPre[lane] ?? 0) +
-            (this.weights.mhcBPre[layerIndex * lanes + lane] ?? 0) +
-            offset,
-        );
-      }
-      const updateInput = new Float32Array(dimension);
-      for (let column = 0; column < dimension; column++) {
-        let sum = 0;
-        for (let lane = 0; lane < lanes; lane++)
-          sum += (hPre[lane] ?? 0) * (x[lane * dimension + column] ?? 0);
-        updateInput[column] = sum;
-      }
-
-      let blockInput = updateInput;
-      const engramSite = geometry.engramLayers.indexOf(layerIndex);
-      if (engramSite >= 0) {
-        const key = engramKeys[engramSite];
-        const value = engramValues[engramSite];
-        if (key && value) {
-          const normalizedInput = rmsUnit(updateInput);
-          const normalizedKey = rmsUnit(key);
-          let dot = 0;
-          for (let index = 0; index < dimension; index++)
-            dot += (normalizedInput[index] ?? 0) * (normalizedKey[index] ?? 0);
-          const alpha = sigmoid(dot / Math.sqrt(dimension));
-          blockInput = new Float32Array(dimension);
-          for (let index = 0; index < dimension; index++)
-            blockInput[index] = (updateInput[index] ?? 0) + alpha * (value[index] ?? 0);
-        }
-      }
-
-      // Sandwich-normalized GQA attention.
-      const attentionInput = rmsNorm(blockInput, layer.normInput);
-      let delta: Float32Array | undefined;
-      let fusedNextX: Float32Array | undefined;
-      if (this.#fusedAttentionEnabled && this.#fusedAttention) {
-        const fused = await this.#fusedAttention.forward({
-          layer,
+    if (
+      residentLayers &&
+      this.#fusedAttention?.forwardResidentLayer &&
+      this.#fusedAttention.readResidentLanes
+    ) {
+      for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
+        if (options.signal?.aborted)
+          throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
+            cause: options.signal.reason,
+          });
+        this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
+        const engramSite = geometry.engramLayers.indexOf(layerIndex);
+        await this.#fusedAttention.forwardResidentLayer({
           layerIndex,
           position,
-          input: attentionInput,
-          blockInput,
-          updateInput,
-          x,
-          phiPost,
-          phiResidual,
+          ...(engramSite >= 0
+            ? { engramKey: engramKeys[engramSite], engramValue: engramValues[engramSite] }
+            : {}),
         });
-        if (fused.kind === "nextX") {
-          fusedNextX = fused.values;
-        } else {
-          delta =
-            fused.kind === "delta"
-              ? fused.values
-              : this.#attentionDelta(fused.values, blockInput, updateInput, layer);
-        }
-      } else {
-        const [query, key, value, gate] = await this.#matvecBatch([
-          { matrix: layer.queryProjection, input: attentionInput },
-          { matrix: layer.keyProjection, input: attentionInput },
-          { matrix: layer.valueProjection, input: attentionInput },
-          { matrix: layer.gateProjection, input: attentionInput },
-        ] as const);
-        for (let head = 0; head < geometry.numberOfHeads; head++) {
-          this.#rmsNormSlice(
-            query,
-            head * geometry.headDimension,
-            geometry.headDimension,
-            layer.queryNorm,
-          );
-        }
-        for (let head = 0; head < geometry.numberOfKVHeads; head++) {
-          this.#rmsNormSlice(
-            key,
-            head * geometry.headDimension,
-            geometry.headDimension,
-            layer.keyNorm,
-          );
-        }
-        applyRope(
-          query,
-          geometry.numberOfHeads,
-          geometry.headDimension,
-          position,
-          geometry.ropeTheta,
-        );
-        applyRope(
-          key,
-          geometry.numberOfKVHeads,
-          geometry.headDimension,
-          position,
-          geometry.ropeTheta,
-        );
-        this.#storeKV(layerIndex, position, key, value);
-        const attentionOutput = this.#attention(layerIndex, position, query);
-        for (let index = 0; index < attentionWidth; index++)
-          attentionOutput[index] = (attentionOutput[index] ?? 0) * sigmoid(gate[index] ?? 0);
-        const projected = await this.backend.matvec(layer.outputProjection, attentionOutput);
-        delta = this.#attentionDelta(projected, blockInput, updateInput, layer);
       }
+      x = await this.#fusedAttention.readResidentLanes();
+    } else {
+      for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
+        if (options.signal?.aborted)
+          throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
+            cause: options.signal.reason,
+          });
+        this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
+        const layer = this.weights.layers[layerIndex];
+        invariant(layer !== undefined, "INVALID_CACT", `Missing layer ${layerIndex}`);
 
-      let nextX = fusedNextX;
-      if (!nextX) {
-        invariant(delta, "BACKEND_UNAVAILABLE", "Layer delta is missing");
-        const hPost = new Float32Array(lanes);
+        const normalizedLanes = rmsUnit(x);
+        const [phiPre, phiPost, phiResidual] = await this.#matvecBatch([
+          {
+            matrix: this.weights.mhcPhiPre,
+            input: normalizedLanes,
+            range: { rowStart: layerIndex * lanes, rowCount: lanes },
+          },
+          {
+            matrix: this.weights.mhcPhiPost,
+            input: normalizedLanes,
+            range: { rowStart: layerIndex * lanes, rowCount: lanes },
+          },
+          {
+            matrix: this.weights.mhcPhiResidual,
+            input: normalizedLanes,
+            range: { rowStart: layerIndex * lanes * lanes, rowCount: lanes * lanes },
+          },
+        ] as const);
+
+        const hPre = new Float32Array(lanes);
+        const ownLane = layerIndex % lanes;
         for (let lane = 0; lane < lanes; lane++) {
-          const offset = lane === ownLane ? 0 : -4;
-          hPost[lane] =
-            2 *
-            sigmoid(
-              (this.weights.mhcAPost[layerIndex] ?? 0) * (phiPost[lane] ?? 0) +
-                (this.weights.mhcBPost[layerIndex * lanes + lane] ?? 0) +
-                offset,
-            );
+          const offset = lane === ownLane ? 4 : -4;
+          hPre[lane] = sigmoid(
+            (this.weights.mhcAPre[layerIndex] ?? 0) * (phiPre[lane] ?? 0) +
+              (this.weights.mhcBPre[layerIndex * lanes + lane] ?? 0) +
+              offset,
+          );
         }
-        const routing = new Float32Array(lanes * lanes);
-        for (let index = 0; index < routing.length; index++) {
-          routing[index] =
-            (this.weights.mhcAResidual[layerIndex] ?? 0) * (phiResidual[index] ?? 0) +
-            (this.weights.mhcBResidual[layerIndex * lanes * lanes + index] ?? 0);
+        const updateInput = new Float32Array(dimension);
+        for (let column = 0; column < dimension; column++) {
+          let sum = 0;
+          for (let lane = 0; lane < lanes; lane++)
+            sum += (hPre[lane] ?? 0) * (x[lane * dimension + column] ?? 0);
+          updateInput[column] = sum;
         }
-        sinkhorn(routing, lanes);
-        nextX = new Float32Array(x.length);
-        for (let lane = 0; lane < lanes; lane++) {
-          for (let column = 0; column < dimension; column++) {
-            let sum = 0;
-            for (let sourceLane = 0; sourceLane < lanes; sourceLane++) {
-              sum +=
-                (routing[lane * lanes + sourceLane] ?? 0) *
-                (x[sourceLane * dimension + column] ?? 0);
-            }
-            nextX[lane * dimension + column] = sum + (hPost[lane] ?? 0) * (delta[column] ?? 0);
+
+        let blockInput = updateInput;
+        const engramSite = geometry.engramLayers.indexOf(layerIndex);
+        if (engramSite >= 0) {
+          const key = engramKeys[engramSite];
+          const value = engramValues[engramSite];
+          if (key && value) {
+            const normalizedInput = rmsUnit(updateInput);
+            const normalizedKey = rmsUnit(key);
+            let dot = 0;
+            for (let index = 0; index < dimension; index++)
+              dot += (normalizedInput[index] ?? 0) * (normalizedKey[index] ?? 0);
+            const alpha = sigmoid(dot / Math.sqrt(dimension));
+            blockInput = new Float32Array(dimension);
+            for (let index = 0; index < dimension; index++)
+              blockInput[index] = (updateInput[index] ?? 0) + alpha * (value[index] ?? 0);
           }
         }
+
+        // Sandwich-normalized GQA attention.
+        const attentionInput = rmsNorm(blockInput, layer.normInput);
+        let delta: Float32Array | undefined;
+        let fusedNextX: Float32Array | undefined;
+        if (this.#fusedAttentionEnabled && this.#fusedAttention) {
+          const fused = await this.#fusedAttention.forward({
+            layer,
+            layerIndex,
+            position,
+            input: attentionInput,
+            blockInput,
+            updateInput,
+            x,
+            phiPost,
+            phiResidual,
+          });
+          if (fused.kind === "nextX") {
+            fusedNextX = fused.values;
+          } else {
+            delta =
+              fused.kind === "delta"
+                ? fused.values
+                : this.#attentionDelta(fused.values, blockInput, updateInput, layer);
+          }
+        } else {
+          const [query, key, value, gate] = await this.#matvecBatch([
+            { matrix: layer.queryProjection, input: attentionInput },
+            { matrix: layer.keyProjection, input: attentionInput },
+            { matrix: layer.valueProjection, input: attentionInput },
+            { matrix: layer.gateProjection, input: attentionInput },
+          ] as const);
+          for (let head = 0; head < geometry.numberOfHeads; head++) {
+            this.#rmsNormSlice(
+              query,
+              head * geometry.headDimension,
+              geometry.headDimension,
+              layer.queryNorm,
+            );
+          }
+          for (let head = 0; head < geometry.numberOfKVHeads; head++) {
+            this.#rmsNormSlice(
+              key,
+              head * geometry.headDimension,
+              geometry.headDimension,
+              layer.keyNorm,
+            );
+          }
+          applyRope(
+            query,
+            geometry.numberOfHeads,
+            geometry.headDimension,
+            position,
+            geometry.ropeTheta,
+          );
+          applyRope(
+            key,
+            geometry.numberOfKVHeads,
+            geometry.headDimension,
+            position,
+            geometry.ropeTheta,
+          );
+          this.#storeKV(layerIndex, position, key, value);
+          const attentionOutput = this.#attention(layerIndex, position, query);
+          for (let index = 0; index < attentionWidth; index++)
+            attentionOutput[index] = (attentionOutput[index] ?? 0) * sigmoid(gate[index] ?? 0);
+          const projected = await this.backend.matvec(layer.outputProjection, attentionOutput);
+          delta = this.#attentionDelta(projected, blockInput, updateInput, layer);
+        }
+
+        let nextX = fusedNextX;
+        if (!nextX) {
+          invariant(delta, "BACKEND_UNAVAILABLE", "Layer delta is missing");
+          const hPost = new Float32Array(lanes);
+          for (let lane = 0; lane < lanes; lane++) {
+            const offset = lane === ownLane ? 0 : -4;
+            hPost[lane] =
+              2 *
+              sigmoid(
+                (this.weights.mhcAPost[layerIndex] ?? 0) * (phiPost[lane] ?? 0) +
+                  (this.weights.mhcBPost[layerIndex * lanes + lane] ?? 0) +
+                  offset,
+              );
+          }
+          const routing = new Float32Array(lanes * lanes);
+          for (let index = 0; index < routing.length; index++) {
+            routing[index] =
+              (this.weights.mhcAResidual[layerIndex] ?? 0) * (phiResidual[index] ?? 0) +
+              (this.weights.mhcBResidual[layerIndex * lanes * lanes + index] ?? 0);
+          }
+          sinkhorn(routing, lanes);
+          nextX = new Float32Array(x.length);
+          for (let lane = 0; lane < lanes; lane++) {
+            for (let column = 0; column < dimension; column++) {
+              let sum = 0;
+              for (let sourceLane = 0; sourceLane < lanes; sourceLane++) {
+                sum +=
+                  (routing[lane * lanes + sourceLane] ?? 0) *
+                  (x[sourceLane * dimension + column] ?? 0);
+              }
+              nextX[lane * dimension + column] = sum + (hPost[lane] ?? 0) * (delta[column] ?? 0);
+            }
+          }
+        }
+        x = nextX;
+        const hidden = new Float32Array(dimension);
+        for (let column = 0; column < dimension; column++) {
+          let sum = 0;
+          for (let lane = 0; lane < lanes; lane++) sum += x[lane * dimension + column] ?? 0;
+          hidden[column] = sum / lanes;
+        }
+        this.#confidencePool?.add(hidden);
       }
-      x = nextX;
-      const hidden = new Float32Array(dimension);
-      for (let column = 0; column < dimension; column++) {
-        let sum = 0;
-        for (let lane = 0; lane < lanes; lane++) sum += x[lane * dimension + column] ?? 0;
-        hidden[column] = sum / lanes;
-      }
-      this.#confidencePool?.add(hidden);
     }
 
     this.#position++;

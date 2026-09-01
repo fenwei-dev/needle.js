@@ -28,6 +28,7 @@ interface CliOptions {
   fusedAttention: boolean;
   fusedMlp: boolean;
   fusedRouting: boolean;
+  residentLayers: boolean;
 }
 
 const DEFAULT_PROMPT = "The most surprising thing about local inference is";
@@ -46,6 +47,7 @@ function parseArgs(argv: string[]): CliOptions {
     fusedAttention: false,
     fusedMlp: false,
     fusedRouting: false,
+    residentLayers: false,
   };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
@@ -59,6 +61,11 @@ function parseArgs(argv: string[]): CliOptions {
       options.fusedAttention = true;
       options.fusedMlp = true;
       options.fusedRouting = true;
+    } else if (argument === "--resident-layers") {
+      options.fusedAttention = true;
+      options.fusedMlp = true;
+      options.fusedRouting = true;
+      options.residentLayers = true;
     } else if (argument === "--backends" && next) {
       options.backends = next.split(",").map((name) => name.trim()) as BackendName[];
       index++;
@@ -100,6 +107,7 @@ Options:
   --fused-attention             TypeGPU GPU-resident attention/KV experiment
   --fused-mlp                   Also fuse sandwich residuals and Hadamard MLP
   --fused-routing               Also fuse post-mHC routing and nextX lanes
+  --resident-layers             Retain lanes and run full layers without readback
   --json                        Print machine-readable JSON
 `);
 }
@@ -241,6 +249,7 @@ try {
     ...(cli.fusedAttention ? { fusedAttention: true } : {}),
     ...(cli.fusedMlp ? { fusedMlp: true } : {}),
     ...(cli.fusedRouting ? { fusedRouting: true } : {}),
+    ...(cli.residentLayers ? { residentLayers: true } : {}),
   };
 
   process.stderr.write("running in WebView...\n");
@@ -269,6 +278,7 @@ const report = {
     fusedAttention: cli.fusedAttention,
     fusedMlp: cli.fusedMlp,
     fusedRouting: cli.fusedRouting,
+    residentLayers: cli.residentLayers,
   },
   results: page.results,
 };

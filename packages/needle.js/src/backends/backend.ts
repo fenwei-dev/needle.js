@@ -18,6 +18,7 @@ export interface FusedAttentionResetOptions {
   readonly maximumLength: number;
   readonly sinkLength: number;
   readonly kvCache: "int8" | "float32";
+  readonly collectConfidence: boolean;
 }
 
 export interface FusedAttentionResult {
@@ -37,10 +38,20 @@ export interface FusedAttentionRequest {
   readonly phiResidual: Float32Array;
 }
 
+export interface ResidentLayerRequest {
+  readonly layerIndex: number;
+  readonly position: number;
+  readonly engramKey?: Float32Array;
+  readonly engramValue?: Float32Array;
+}
+
 /** Stateful accelerator owned and disposed by its backend. */
 export interface FusedAttentionSession {
   reset(options: FusedAttentionResetOptions): boolean;
   forward(request: FusedAttentionRequest): Promise<FusedAttentionResult>;
+  beginResidentToken?(lanes: Float32Array): Promise<boolean>;
+  forwardResidentLayer?(request: ResidentLayerRequest): Promise<void>;
+  readResidentLanes?(): Promise<Float32Array>;
   dispose(): void;
 }
 

@@ -148,6 +148,7 @@ const agent = await createNeedleTypeGPU({
     // fusedAttention: true, // experimental resident int8 KV + attention
     // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
     // fusedRouting: true, // also fuse post-mHC Sinkhorn and nextX lanes
+    // residentLayers: true, // retain nextX and execute complete layers on GPU
   },
 });
 ```
@@ -199,7 +200,9 @@ bun run bench -- --minimum-gpu-rows 0 # diagnostic all-WebGPU matvec path
 
 Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/).
 
-TypeGPU also has an opt-in `fusedAttention` experiment. It keeps Q/K/V, the int8 KV cache, attention softmax, gating, and the output projection on GPU, reducing the forced-all-GPU path from about 83 host boundaries to about 56 per model step. `fusedMlp: true` additionally executes sandwich residual normalization and both 512-point Hadamard transforms before returning the layer delta. `fusedRouting: true` continues through h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. All preserve greedy output in the measured prompts, but are not defaults because isolated residency stages currently cost more than the CPU work/readbacks they remove.
+TypeGPU also has opt-in residency experiments. `fusedAttention` keeps Q/K/V, int8 KV state, attention, gating, and output projection on GPU; `fusedMlp` adds sandwich residuals and both 512-point Hadamard transforms; `fusedRouting` adds h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. The individual stages preserve greedy output but cost more than CPU while lane state still round-trips.
+
+`residentLayers: true` removes that round trip. It retains all 2,048 lane values, performs mHC pre-projections/gating, optional engram injection, attention, MLP, and post-routing on GPU, and reads lanes only after layer 27. Forced-all-GPU throughput measured **51.3 tok/s** on the standard prompt and 5.44 tok/s for a 98-token prompt, versus CPU's 41.5 and 4.62 tok/s in the same runs. Confidence collection currently falls back to the non-resident path.
 
 ## Weight sources
 

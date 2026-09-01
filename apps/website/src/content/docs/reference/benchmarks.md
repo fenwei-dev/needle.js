@@ -55,9 +55,16 @@ For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok
 
 `fusedMlp: true` continues through sandwich normalization and the fixed Hadamard MLP, returning the layer delta. It measured about **15 tok/s** and matched the same greedy output.
 
-`fusedRouting: true` additionally performs h-post gating, 20 log-space Sinkhorn iterations, four-lane routing, and `nextX` construction on GPU. It measured about **10.6 tok/s** on this workload and also matched greedy output. It currently transfers 2,048 lane values in both directions each layer, so it is an architectural stepping stone rather than a performance recommendation.
+`fusedRouting: true` additionally performs h-post gating, 20 log-space Sinkhorn iterations, four-lane routing, and `nextX` construction on GPU. In isolation it measured about **10.6 tok/s**, because it transfers 2,048 lane values in both directions each layer.
 
-A complete resident engine would retain those hidden lanes, add mHC pre-routing and engram mixing, and reduce synchronization from about 56 groups to one boundary per generated token.
+`residentLayers: true` retains that `nextX` buffer for the next layer and adds GPU mHC pre-routing, h-pre reduction, engram injection, and input normalization. All 27 layers run without host readback; lanes are read once at the end of the token.
+
+| Resident-layer workload | CPU | TypeGPU resident layers |
+| --- | ---: | ---: |
+| Standard prompt, 32 generated tokens | 41.5 tok/s | **51.3 tok/s** |
+| 98-token prompt, 8 generated tokens | 4.62 tok/s | **5.44 tok/s** |
+
+The resident path matched CPU greedy text in both workloads. Confidence collection currently selects the non-resident path because the confidence pool consumes every layer's hidden mean.
 
 ## Reproduce
 
@@ -79,6 +86,9 @@ bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --fused-mlp
 
 # Continue through post-mHC routing and four-lane nextX
 bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --fused-routing
+
+# Retain lanes and run all 27 layers without host readback
+bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers
 ```
 
 The harness bundles `scripts/bench-browser.ts`, serves it locally, and drives `Bun.WebView` with the `webkit` backend so Chrome is not launched with `--disable-gpu`.

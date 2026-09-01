@@ -14,6 +14,7 @@ export interface BrowserBenchOptions {
   fusedAttention?: boolean;
   fusedMlp?: boolean;
   fusedRouting?: boolean;
+  residentLayers?: boolean;
 }
 
 export interface RunSample {
@@ -54,6 +55,7 @@ async function measureBackend(
               ...(backend === "typegpu" && options.fusedAttention ? { fusedAttention: true } : {}),
               ...(backend === "typegpu" && options.fusedMlp ? { fusedMlp: true } : {}),
               ...(backend === "typegpu" && options.fusedRouting ? { fusedRouting: true } : {}),
+              ...(backend === "typegpu" && options.residentLayers ? { residentLayers: true } : {}),
             },
     });
   } catch (error) {

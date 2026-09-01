@@ -1,3 +1,136 @@
+export const RMS_LANES_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> source: array<f32>;
+@group(0) @binding(1) var<storage, read_write> normalized: array<f32>;
+
+var<workgroup> rms_partial: array<f32, 128>;
+
+@compute @workgroup_size(128)
+fn rms_lanes(@builtin(local_invocation_id) local: vec3u) {
+  var sum = 0.0;
+  for (var index = local.x; index < 2048u; index += 128u) {
+    let value = source[index];
+    sum = sum + value * value;
+  }
+  rms_partial[local.x] = sum;
+  workgroupBarrier();
+  for (var stride = 64u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      rms_partial[local.x] = rms_partial[local.x] + rms_partial[local.x + stride];
+    }
+    workgroupBarrier();
+  }
+  let inverse = inverseSqrt(rms_partial[0] / 2048.0 + 1e-6);
+  for (var index = local.x; index < 2048u; index += 128u) {
+    normalized[index] = source[index] * inverse;
+  }
+}
+`;
+
+export const MHC_PRE_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> lanes: array<f32>;
+@group(0) @binding(1) var<storage, read> phi_pre: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<f32>;
+@group(0) @binding(3) var<storage, read_write> update_input: array<f32>;
+
+var<workgroup> h_pre: array<f32, 4>;
+
+fn sigmoid(value: f32) -> f32 {
+  return 1.0 / (1.0 + exp(-value));
+}
+
+@compute @workgroup_size(128)
+fn mhc_pre(@builtin(local_invocation_id) local: vec3u) {
+  if (local.x < 4u) {
+    let own_lane = u32(params[1]);
+    var offset = -4.0;
+    if (local.x == own_lane) { offset = 4.0; }
+    h_pre[local.x] = sigmoid(params[0] * phi_pre[local.x] + params[2u + local.x] + offset);
+  }
+  workgroupBarrier();
+  for (var column = local.x; column < 512u; column += 128u) {
+    var value = 0.0;
+    for (var lane = 0u; lane < 4u; lane++) {
+      value = value + h_pre[lane] * lanes[lane * 512u + column];
+    }
+    update_input[column] = value;
+  }
+}
+`;
+
+export const ENGRAM_INJECT_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> update_input: array<f32>;
+@group(0) @binding(1) var<storage, read> engram_key: array<f32>;
+@group(0) @binding(2) var<storage, read> engram_value: array<f32>;
+@group(0) @binding(3) var<storage, read_write> block_input: array<f32>;
+
+var<workgroup> update_partial: array<f32, 128>;
+var<workgroup> key_partial: array<f32, 128>;
+var<workgroup> dot_partial: array<f32, 128>;
+
+@compute @workgroup_size(128)
+fn engram_inject(@builtin(local_invocation_id) local: vec3u) {
+  var update_sum = 0.0;
+  var key_sum = 0.0;
+  var dot = 0.0;
+  for (var index = local.x; index < 512u; index += 128u) {
+    let update = update_input[index];
+    let key = engram_key[index];
+    update_sum = update_sum + update * update;
+    key_sum = key_sum + key * key;
+    dot = dot + update * key;
+  }
+  update_partial[local.x] = update_sum;
+  key_partial[local.x] = key_sum;
+  dot_partial[local.x] = dot;
+  workgroupBarrier();
+  for (var stride = 64u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      update_partial[local.x] = update_partial[local.x] + update_partial[local.x + stride];
+      key_partial[local.x] = key_partial[local.x] + key_partial[local.x + stride];
+      dot_partial[local.x] = dot_partial[local.x] + dot_partial[local.x + stride];
+    }
+    workgroupBarrier();
+  }
+  let normalized_dot =
+    dot_partial[0] *
+    inverseSqrt(update_partial[0] / 512.0 + 1e-6) *
+    inverseSqrt(key_partial[0] / 512.0 + 1e-6);
+  let alpha = 1.0 / (1.0 + exp(-normalized_dot * 0.04419417382415922));
+  for (var index = local.x; index < 512u; index += 128u) {
+    block_input[index] = update_input[index] + alpha * engram_value[index];
+  }
+}
+`;
+
+export const RMS_NORM_512_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> source: array<f32>;
+@group(0) @binding(1) var<storage, read> scale: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+var<workgroup> norm_partial: array<f32, 128>;
+
+@compute @workgroup_size(128)
+fn rms_norm_512(@builtin(local_invocation_id) local: vec3u) {
+  var sum = 0.0;
+  for (var index = local.x; index < 512u; index += 128u) {
+    let value = source[index];
+    sum = sum + value * value;
+  }
+  norm_partial[local.x] = sum;
+  workgroupBarrier();
+  for (var stride = 64u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      norm_partial[local.x] = norm_partial[local.x] + norm_partial[local.x + stride];
+    }
+    workgroupBarrier();
+  }
+  let inverse = inverseSqrt(norm_partial[0] / 512.0 + 1e-6);
+  for (var index = local.x; index < 512u; index += 128u) {
+    output[index] = (1.0 + scale[index]) * source[index] * inverse;
+  }
+}
+`;
+
 export const QUERY_NORM_ROPE_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> query: array<f32>;
 @group(0) @binding(1) var<storage, read> norm_scale: array<f32>;

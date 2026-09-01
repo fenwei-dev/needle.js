@@ -75,6 +75,8 @@ export interface TypeGPUBackendOptions {
   readonly fusedMlp?: boolean;
   /** Also construct post-mHC routing and four-lane nextX on GPU. */
   readonly fusedRouting?: boolean;
+  /** Retain four-lane state and execute complete layers without readback. */
+  readonly residentLayers?: boolean;
 }
 
 /** CQ matvec acceleration using a device initialized and owned through TypeGPU. */
@@ -100,6 +102,7 @@ export class TypeGPUBackend implements InferenceBackend {
   readonly #fusedAttentionEnabled: boolean;
   readonly #fusedMlpEnabled: boolean;
   readonly #fusedRoutingEnabled: boolean;
+  readonly #residentLayersEnabled: boolean;
   #fusedAttentionSession: TypeGPUFusedAttentionSession | undefined;
   #batchPipeline: GPUComputePipeline | undefined;
   #batchPipelinePromise: Promise<GPUComputePipeline> | undefined;
@@ -115,6 +118,7 @@ export class TypeGPUBackend implements InferenceBackend {
     fusedAttention: boolean,
     fusedMlp: boolean,
     fusedRouting: boolean,
+    residentLayers: boolean,
   ) {
     this.root = root;
     this.device = root.device;
@@ -125,6 +129,7 @@ export class TypeGPUBackend implements InferenceBackend {
     this.#fusedAttentionEnabled = fusedAttention;
     this.#fusedMlpEnabled = fusedMlp;
     this.#fusedRoutingEnabled = fusedRouting;
+    this.#residentLayersEnabled = residentLayers;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
@@ -180,9 +185,14 @@ export class TypeGPUBackend implements InferenceBackend {
         pipeline,
         module,
         normalizeMinimumGpuRows(options.minimumGpuRows),
-        options.fusedAttention ?? options.fusedMlp ?? options.fusedRouting ?? false,
-        options.fusedMlp ?? options.fusedRouting ?? false,
-        options.fusedRouting ?? false,
+        options.fusedAttention ??
+          options.fusedMlp ??
+          options.fusedRouting ??
+          options.residentLayers ??
+          false,
+        options.fusedMlp ?? options.fusedRouting ?? options.residentLayers ?? false,
+        options.fusedRouting ?? options.residentLayers ?? false,
+        options.residentLayers ?? false,
       );
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
@@ -340,6 +350,7 @@ export class TypeGPUBackend implements InferenceBackend {
         this.weights,
         this.#fusedMlpEnabled,
         this.#fusedRoutingEnabled,
+        this.#residentLayersEnabled,
       );
     }
     return this.#fusedAttentionSession;

@@ -38,6 +38,7 @@ const agent = await createNeedleTypeGPU({
     // fusedAttention: true, // experimental resident int8 KV + attention
     // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
     // fusedRouting: true, // also fuse post-mHC Sinkhorn and nextX lanes
+    // residentLayers: true, // retain nextX and run complete layers on GPU
   },
 });
 ```
@@ -104,7 +105,19 @@ This cuts the forced-all-GPU path from about 83 host synchronization groups to a
 
 `fusedRouting: true` continues through h-post gating, the 20-iteration 4×4 log-space Sinkhorn router, four-lane mixing, and `nextX` construction. It returns all 2,048 lane values to the reference loop.
 
-All options are experimental. Small-context WebGPU attention is currently slower than CPU attention despite removing readbacks; the MLP extension adds GPU work without removing another host boundary; and routing currently uploads and reads the lane state every layer. They are groundwork for retaining hidden lanes between layers, where those transfers disappear.
+The individual fusion options are experimental. Small-context WebGPU attention is slower than CPU attention despite removing readbacks; the MLP extension adds work without removing another boundary; and standalone routing uploads and reads lane state every layer.
+
+### Resident layers
+
+`residentLayers: true` implies all three fusion stages and eliminates that lane-state round trip. At the start of a token it uploads the four replicated embedding lanes. For each layer it then queues, without a host readback:
+
+1. global lane RMS and sixteen groupwise Hadamard preparations;
+2. selected mHC phi projections and h-pre lane reduction;
+3. optional engram injection and input RMSNorm;
+4. resident attention/KV, output projection, sandwich residual, and MLP;
+5. h-post, Sinkhorn routing, and `nextX`, copied into the next layer's lane buffer.
+
+After layer 27 it reads the 2,048 lane values once. This measured 51.3 tok/s on the standard forced-all-GPU workload and 5.44 tok/s at a 98-token prompt, ahead of CPU in both paired runs. It currently requires disabled confidence collection; high-level confidence-head calls automatically use the non-resident path.
 
 ## Custom backend
 

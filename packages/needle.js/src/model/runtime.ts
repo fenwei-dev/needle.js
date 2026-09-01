@@ -5,7 +5,7 @@ import type {
 } from "../backends/backend.js";
 import { denseMatvec } from "../backends/cq.js";
 import { invariant, NeedleError } from "../errors.js";
-import type { CactProbeHead, CactWeights } from "./cact.js";
+import type { CactLayer, CactProbeHead, CactWeights } from "./cact.js";
 import {
   applyRope,
   hadamardMlp,
@@ -326,14 +326,20 @@ export class NeedleRuntime {
 
       // Sandwich-normalized GQA attention.
       const attentionInput = rmsNorm(blockInput, layer.normInput);
-      let projected: Float32Array;
+      let delta: Float32Array;
       if (this.#fusedAttentionEnabled && this.#fusedAttention) {
-        projected = await this.#fusedAttention.forward({
+        const fused = await this.#fusedAttention.forward({
           layer,
           layerIndex,
           position,
           input: attentionInput,
+          blockInput,
+          updateInput,
         });
+        delta =
+          fused.kind === "delta"
+            ? fused.values
+            : this.#attentionDelta(fused.values, blockInput, updateInput, layer);
       } else {
         const [query, key, value, gate] = await this.#matvecBatch([
           { matrix: layer.queryProjection, input: attentionInput },
@@ -375,26 +381,8 @@ export class NeedleRuntime {
         const attentionOutput = this.#attention(layerIndex, position, query);
         for (let index = 0; index < attentionWidth; index++)
           attentionOutput[index] = (attentionOutput[index] ?? 0) * sigmoid(gate[index] ?? 0);
-        projected = await this.backend.matvec(layer.outputProjection, attentionOutput);
-      }
-      const normalizedProjected = rmsNorm(projected, layer.postAttentionNorm);
-      const attentionScale = sigmoid(layer.attentionGate);
-      const afterAttention = new Float32Array(dimension);
-      for (let index = 0; index < dimension; index++)
-        afterAttention[index] =
-          (blockInput[index] ?? 0) + attentionScale * (normalizedProjected[index] ?? 0);
-
-      const preHadamard = rmsNorm(afterAttention, layer.preHadamardNorm);
-      const mlp = hadamardMlp(
-        preHadamard,
-        layer.hadamardD1,
-        layer.hadamardD2,
-        layer.hadamardD3,
-        geometry.hadamardDimension,
-      );
-      const delta = new Float32Array(dimension);
-      for (let index = 0; index < dimension; index++) {
-        delta[index] = (afterAttention[index] ?? 0) + (mlp[index] ?? 0) - (updateInput[index] ?? 0);
+        const projected = await this.backend.matvec(layer.outputProjection, attentionOutput);
+        delta = this.#attentionDelta(projected, blockInput, updateInput, layer);
       }
 
       const hPost = new Float32Array(lanes);
@@ -446,6 +434,34 @@ export class NeedleRuntime {
     }
     const final = rmsNorm(mean, this.weights.finalNorm);
     return this.backend.matvec(this.weights.embedding, final);
+  }
+
+  #attentionDelta(
+    projected: Float32Array,
+    blockInput: Float32Array,
+    updateInput: Float32Array,
+    layer: CactLayer,
+  ): Float32Array {
+    const dimension = this.weights.geometry.modelDimension;
+    const normalizedProjected = rmsNorm(projected, layer.postAttentionNorm);
+    const attentionScale = sigmoid(layer.attentionGate);
+    const afterAttention = new Float32Array(dimension);
+    for (let index = 0; index < dimension; index++)
+      afterAttention[index] =
+        (blockInput[index] ?? 0) + attentionScale * (normalizedProjected[index] ?? 0);
+    const preHadamard = rmsNorm(afterAttention, layer.preHadamardNorm);
+    const mlp = hadamardMlp(
+      preHadamard,
+      layer.hadamardD1,
+      layer.hadamardD2,
+      layer.hadamardD3,
+      this.weights.geometry.hadamardDimension,
+    );
+    const delta = new Float32Array(dimension);
+    for (let index = 0; index < dimension; index++) {
+      delta[index] = (afterAttention[index] ?? 0) + (mlp[index] ?? 0) - (updateInput[index] ?? 0);
+    }
+    return delta;
   }
 
   async #matvecBatch<const Requests extends readonly MatvecRequest[]>(

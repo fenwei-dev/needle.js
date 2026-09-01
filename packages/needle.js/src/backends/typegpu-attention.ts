@@ -5,15 +5,18 @@ import type { CactLayer, CactWeights, CqMatrix } from "../model/cact.js";
 import type {
   FusedAttentionRequest,
   FusedAttentionResetOptions,
+  FusedAttentionResult,
   FusedAttentionSession,
 } from "./backend.js";
 import { prepareCqActivation } from "./cq.js";
 import {
   ATTENTION_SCORES_WGSL,
   ATTENTION_SOFTMAX_GATE_WGSL,
+  HADAMARD_MLP_DELTA_WGSL,
   KV_NORM_ROPE_STORE_WGSL,
   PREPARE_ATTENTION_WGSL,
   QUERY_NORM_ROPE_WGSL,
+  SANDWICH_PREPARE_MLP_WGSL,
 } from "./typegpu-attention-kernel.js";
 import { CQ_MATVEC_WGSL, matrixParameters, webGpuMatrixData } from "./webgpu-kernel.js";
 
@@ -30,6 +33,11 @@ interface GpuMatrix {
 interface LayerNormBuffers {
   readonly query: GPUBuffer;
   readonly key: GPUBuffer;
+  readonly postAttention: GPUBuffer;
+  readonly preHadamard: GPUBuffer;
+  readonly d1: GPUBuffer;
+  readonly d2: GPUBuffer;
+  readonly d3: GPUBuffer;
 }
 
 interface Pipelines {
@@ -39,11 +47,14 @@ interface Pipelines {
   readonly scores: GPUComputePipeline;
   readonly attention: GPUComputePipeline;
   readonly prepare: GPUComputePipeline;
+  readonly sandwich: GPUComputePipeline;
+  readonly mlp: GPUComputePipeline;
 }
 
 export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #device: GPUDevice;
   readonly #weights: CactWeights;
+  readonly #fuseMlp: boolean;
   readonly #codebook: GPUBuffer;
   readonly #preparedInput: GPUBuffer;
   readonly #query: GPUBuffer;
@@ -54,10 +65,16 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #scores: GPUBuffer;
   readonly #preparedAttention: GPUBuffer;
   readonly #projected: GPUBuffer;
+  readonly #blockInput: GPUBuffer;
+  readonly #updateInput: GPUBuffer;
+  readonly #afterAttention: GPUBuffer;
+  readonly #mlpInput: GPUBuffer;
+  readonly #delta: GPUBuffer;
   readonly #staging: GPUBuffer;
   readonly #queryParams: GPUBuffer;
   readonly #kvParams: GPUBuffer;
   readonly #attentionParams: GPUBuffer;
+  readonly #layerParams: GPUBuffer;
   readonly #projectionParams: GPUBuffer[];
   readonly #matrixCache = new WeakMap<CqMatrix, GpuMatrix>();
   readonly #allocatedMatrices: GpuMatrix[] = [];
@@ -75,14 +92,17 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   #scoreGroup: GPUBindGroup | undefined;
   #attentionGroup: GPUBindGroup | undefined;
   #prepareGroup: GPUBindGroup | undefined;
+  #sandwichGroups = new WeakMap<CactLayer, GPUBindGroup>();
+  #mlpGroups = new WeakMap<CactLayer, GPUBindGroup>();
   #kvAllocation = 0;
   #sinkLength = 0;
   #enabled = false;
   #disposed = false;
 
-  constructor(device: GPUDevice, weights: CactWeights) {
+  constructor(device: GPUDevice, weights: CactWeights, fuseMlp: boolean) {
     this.#device = device;
     this.#weights = weights;
+    this.#fuseMlp = fuseMlp;
     const geometry = weights.geometry;
     const dimensionBytes = geometry.modelDimension * 4;
     const keyValueBytes = geometry.numberOfKVHeads * geometry.headDimension * 4;
@@ -100,6 +120,21 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     );
     this.#preparedAttention = storageBuffer(device, "needle.attention.prepared", dimensionBytes);
     this.#projected = storageBuffer(device, "needle.attention.projected", dimensionBytes, COPY_SRC);
+    this.#blockInput = storageBuffer(
+      device,
+      "needle.attention.block-input",
+      dimensionBytes,
+      COPY_DST,
+    );
+    this.#updateInput = storageBuffer(
+      device,
+      "needle.attention.update-input",
+      dimensionBytes,
+      COPY_DST,
+    );
+    this.#afterAttention = storageBuffer(device, "needle.attention.after", dimensionBytes);
+    this.#mlpInput = storageBuffer(device, "needle.attention.mlp-input", dimensionBytes);
+    this.#delta = storageBuffer(device, "needle.attention.delta", dimensionBytes, COPY_SRC);
     this.#staging = device.createBuffer({
       label: "needle.attention.readback",
       size: dimensionBytes,
@@ -108,6 +143,7 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     this.#queryParams = storageBuffer(device, "needle.attention.query-params", 8, COPY_DST);
     this.#kvParams = storageBuffer(device, "needle.attention.kv-params", 32, COPY_DST);
     this.#attentionParams = storageBuffer(device, "needle.attention.params", 32, COPY_DST);
+    this.#layerParams = storageBuffer(device, "needle.attention.layer-params", 4, COPY_DST);
     this.#projectionParams = Array.from({ length: 5 }, (_, index) =>
       storageBuffer(device, `needle.attention.projection-params.${index}`, 32, COPY_DST),
     );
@@ -123,6 +159,7 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       geometry.headDimension === 64 &&
       geometry.numberOfHeads === 8 &&
       geometry.numberOfKVHeads === 4 &&
+      geometry.hadamardDimension === 512 &&
       geometry.kvWindow > 0 &&
       this.#weights.layers.every(
         (layer) =>
@@ -139,7 +176,10 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
           layer.gateProjection.groupSize === layer.queryProjection.groupSize &&
           layer.outputProjection.inputSize === 512 &&
           layer.outputProjection.outputSize === 512 &&
-          layer.outputProjection.groupSize === 128,
+          layer.outputProjection.groupSize === 128 &&
+          layer.hadamardD1.length === 512 &&
+          layer.hadamardD2.length === 512 &&
+          layer.hadamardD3.length === 512,
       ) &&
       options.sinkLength + geometry.kvWindow <= 512;
     if (!this.#enabled) return false;
@@ -179,7 +219,7 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     return true;
   }
 
-  async forward(request: FusedAttentionRequest): Promise<Float32Array> {
+  async forward(request: FusedAttentionRequest): Promise<FusedAttentionResult> {
     invariant(this.#enabled && !this.#disposed, "BACKEND_UNAVAILABLE", "Fused attention is off");
     const keyCache = this.#keyCache;
     const valueCache = this.#valueCache;
@@ -190,11 +230,20 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       "BACKEND_UNAVAILABLE",
       "KV cache is missing",
     );
-    const { layer, layerIndex, position, input } = request;
+    const { layer, layerIndex, position, input, blockInput, updateInput } = request;
     const geometry = this.#weights.geometry;
     const pipelines = await this.#pipelines;
     const prepared = prepareCqActivation(layer.queryProjection, input);
     this.#device.queue.writeBuffer(this.#preparedInput, 0, bufferSource(prepared));
+    if (this.#fuseMlp) {
+      this.#device.queue.writeBuffer(this.#blockInput, 0, bufferSource(blockInput));
+      this.#device.queue.writeBuffer(this.#updateInput, 0, bufferSource(updateInput));
+      this.#device.queue.writeBuffer(
+        this.#layerParams,
+        0,
+        bufferSource(new Uint32Array([floatBits(layer.attentionGate)])),
+      );
+    }
 
     const matrices = [
       layer.queryProjection,
@@ -330,12 +379,31 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     );
     outputPass.dispatchWorkgroups(layer.outputProjection.outputSize);
     outputPass.end();
-    encoder.copyBufferToBuffer(this.#projected, 0, this.#staging, 0, geometry.modelDimension * 4);
+
+    let readback = this.#projected;
+    let kind: FusedAttentionResult["kind"] = "projected";
+    if (this.#fuseMlp) {
+      const sandwichPass = encoder.beginComputePass({ label: "needle.attention.sandwich" });
+      sandwichPass.setPipeline(pipelines.sandwich);
+      sandwichPass.setBindGroup(0, this.#sandwichGroup(layer, pipelines.sandwich));
+      sandwichPass.dispatchWorkgroups(1);
+      sandwichPass.end();
+
+      const mlpPass = encoder.beginComputePass({ label: "needle.attention.hadamard-mlp" });
+      mlpPass.setPipeline(pipelines.mlp);
+      mlpPass.setBindGroup(0, this.#mlpGroup(layer, pipelines.mlp));
+      mlpPass.dispatchWorkgroups(1);
+      mlpPass.end();
+      readback = this.#delta;
+      kind = "delta";
+    }
+
+    encoder.copyBufferToBuffer(readback, 0, this.#staging, 0, geometry.modelDimension * 4);
     this.#device.queue.submit([encoder.finish()]);
     await this.#staging.mapAsync(MAP_READ, 0, geometry.modelDimension * 4);
     try {
       const mapped = this.#staging.getMappedRange(0, geometry.modelDimension * 4);
-      return new Float32Array(mapped).slice();
+      return { kind, values: new Float32Array(mapped).slice() };
     } finally {
       this.#staging.unmap();
     }
@@ -356,10 +424,16 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       this.#scores,
       this.#preparedAttention,
       this.#projected,
+      this.#blockInput,
+      this.#updateInput,
+      this.#afterAttention,
+      this.#mlpInput,
+      this.#delta,
       this.#staging,
       this.#queryParams,
       this.#kvParams,
       this.#attentionParams,
+      this.#layerParams,
       ...this.#projectionParams,
     ]) {
       buffer.destroy();
@@ -371,6 +445,11 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     for (const norms of this.#allocatedNorms) {
       norms.query.destroy();
       norms.key.destroy();
+      norms.postAttention.destroy();
+      norms.preHadamard.destroy();
+      norms.d1.destroy();
+      norms.d2.destroy();
+      norms.d3.destroy();
     }
   }
 
@@ -434,6 +513,21 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     const result = {
       query: bufferWithData(this.#device, "needle.attention.query-norm", layer.queryNorm, STORAGE),
       key: bufferWithData(this.#device, "needle.attention.key-norm", layer.keyNorm, STORAGE),
+      postAttention: bufferWithData(
+        this.#device,
+        "needle.attention.post-norm",
+        layer.postAttentionNorm,
+        STORAGE,
+      ),
+      preHadamard: bufferWithData(
+        this.#device,
+        "needle.attention.pre-hadamard-norm",
+        layer.preHadamardNorm,
+        STORAGE,
+      ),
+      d1: bufferWithData(this.#device, "needle.attention.hadamard-d1", layer.hadamardD1, STORAGE),
+      d2: bufferWithData(this.#device, "needle.attention.hadamard-d2", layer.hadamardD2, STORAGE),
+      d3: bufferWithData(this.#device, "needle.attention.hadamard-d3", layer.hadamardD3, STORAGE),
     };
     this.#layerNorms.set(layer, result);
     this.#allocatedNorms.push(result);
@@ -532,6 +626,46 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     });
     return this.#prepareGroup;
   }
+
+  #sandwichGroup(layer: CactLayer, pipeline: GPUComputePipeline): GPUBindGroup {
+    const cached = this.#sandwichGroups.get(layer);
+    if (cached) return cached;
+    const norms = this.#norms(layer);
+    const group = this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.#projected } },
+        { binding: 1, resource: { buffer: norms.postAttention } },
+        { binding: 2, resource: { buffer: norms.preHadamard } },
+        { binding: 3, resource: { buffer: this.#blockInput } },
+        { binding: 4, resource: { buffer: norms.d1 } },
+        { binding: 5, resource: { buffer: this.#layerParams } },
+        { binding: 6, resource: { buffer: this.#afterAttention } },
+        { binding: 7, resource: { buffer: this.#mlpInput } },
+      ],
+    });
+    this.#sandwichGroups.set(layer, group);
+    return group;
+  }
+
+  #mlpGroup(layer: CactLayer, pipeline: GPUComputePipeline): GPUBindGroup {
+    const cached = this.#mlpGroups.get(layer);
+    if (cached) return cached;
+    const norms = this.#norms(layer);
+    const group = this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.#mlpInput } },
+        { binding: 1, resource: { buffer: norms.d2 } },
+        { binding: 2, resource: { buffer: norms.d3 } },
+        { binding: 3, resource: { buffer: this.#afterAttention } },
+        { binding: 4, resource: { buffer: this.#updateInput } },
+        { binding: 5, resource: { buffer: this.#delta } },
+      ],
+    });
+    this.#mlpGroups.set(layer, group);
+    return group;
+  }
 }
 
 async function createPipelines(device: GPUDevice): Promise<Pipelines> {
@@ -542,6 +676,8 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     ["scores", ATTENTION_SCORES_WGSL, "attention_scores"],
     ["attention", ATTENTION_SOFTMAX_GATE_WGSL, "attention_softmax_gate"],
     ["prepare", PREPARE_ATTENTION_WGSL, "prepare_attention"],
+    ["sandwich", SANDWICH_PREPARE_MLP_WGSL, "sandwich_prepare_mlp"],
+    ["mlp", HADAMARD_MLP_DELTA_WGSL, "hadamard_mlp_delta"],
   ] as const;
   const pipelines = await Promise.all(
     descriptors.map(async ([label, source, entryPoint]) => {
@@ -559,13 +695,13 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
         : device.createComputePipeline(descriptor);
     }),
   );
-  const [cq, query, kv, scores, attention, prepare] = pipelines;
+  const [cq, query, kv, scores, attention, prepare, sandwich, mlp] = pipelines;
   invariant(
-    cq && query && kv && scores && attention && prepare,
+    cq && query && kv && scores && attention && prepare && sandwich && mlp,
     "WEBGPU_UNAVAILABLE",
     "Attention pipeline failed",
   );
-  return { cq, query, kv, scores, attention, prepare };
+  return { cq, query, kv, scores, attention, prepare, sandwich, mlp };
 }
 
 function storageBuffer(device: GPUDevice, label: string, size: number, extraUsage = 0): GPUBuffer {

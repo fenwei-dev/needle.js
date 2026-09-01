@@ -20,17 +20,24 @@ export interface FusedAttentionResetOptions {
   readonly kvCache: "int8" | "float32";
 }
 
+export interface FusedAttentionResult {
+  readonly kind: "projected" | "delta";
+  readonly values: Float32Array;
+}
+
 export interface FusedAttentionRequest {
   readonly layer: CactLayer;
   readonly layerIndex: number;
   readonly position: number;
   readonly input: Float32Array;
+  readonly blockInput: Float32Array;
+  readonly updateInput: Float32Array;
 }
 
 /** Stateful accelerator owned and disposed by its backend. */
 export interface FusedAttentionSession {
   reset(options: FusedAttentionResetOptions): boolean;
-  forward(request: FusedAttentionRequest): Promise<Float32Array>;
+  forward(request: FusedAttentionRequest): Promise<FusedAttentionResult>;
   dispose(): void;
 }
 

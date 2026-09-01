@@ -71,6 +71,8 @@ export interface TypeGPUBackendOptions {
   readonly minimumGpuRows?: number;
   /** Keep Q/K/V, int8 KV cache, attention, gate, and output projection on GPU. */
   readonly fusedAttention?: boolean;
+  /** Also keep sandwich residuals and the fixed Hadamard MLP on GPU. */
+  readonly fusedMlp?: boolean;
 }
 
 /** CQ matvec acceleration using a device initialized and owned through TypeGPU. */
@@ -94,6 +96,7 @@ export class TypeGPUBackend implements InferenceBackend {
   readonly #allocatedBatchMatrices: GpuBatchMatrix[] = [];
   readonly #minimumGpuRows: number;
   readonly #fusedAttentionEnabled: boolean;
+  readonly #fusedMlpEnabled: boolean;
   #fusedAttentionSession: TypeGPUFusedAttentionSession | undefined;
   #batchPipeline: GPUComputePipeline | undefined;
   #batchPipelinePromise: Promise<GPUComputePipeline> | undefined;
@@ -107,6 +110,7 @@ export class TypeGPUBackend implements InferenceBackend {
     shaderModule: GPUShaderModule,
     minimumGpuRows: number,
     fusedAttention: boolean,
+    fusedMlp: boolean,
   ) {
     this.root = root;
     this.device = root.device;
@@ -115,6 +119,7 @@ export class TypeGPUBackend implements InferenceBackend {
     this.#shaderModule = shaderModule;
     this.#minimumGpuRows = minimumGpuRows;
     this.#fusedAttentionEnabled = fusedAttention;
+    this.#fusedMlpEnabled = fusedMlp;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
@@ -171,6 +176,7 @@ export class TypeGPUBackend implements InferenceBackend {
         module,
         normalizeMinimumGpuRows(options.minimumGpuRows),
         options.fusedAttention ?? false,
+        options.fusedMlp ?? false,
       );
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
@@ -323,7 +329,11 @@ export class TypeGPUBackend implements InferenceBackend {
     invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "TypeGPU backend has been disposed");
     if (!this.#fusedAttentionEnabled) return undefined;
     if (!this.#fusedAttentionSession) {
-      this.#fusedAttentionSession = new TypeGPUFusedAttentionSession(this.device, this.weights);
+      this.#fusedAttentionSession = new TypeGPUFusedAttentionSession(
+        this.device,
+        this.weights,
+        this.#fusedMlpEnabled,
+      );
     }
     return this.#fusedAttentionSession;
   }

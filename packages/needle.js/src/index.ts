@@ -2,6 +2,7 @@ export type {
   BackendKind,
   FusedAttentionRequest,
   FusedAttentionResetOptions,
+  FusedAttentionResult,
   FusedAttentionSession,
   InferenceBackend,
   MatrixRowRange,

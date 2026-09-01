@@ -266,6 +266,106 @@ fn attention_softmax_gate(
 }
 `;
 
+export const SANDWICH_PREPARE_MLP_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> projected: array<f32>;
+@group(0) @binding(1) var<storage, read> post_norm: array<f32>;
+@group(0) @binding(2) var<storage, read> pre_norm: array<f32>;
+@group(0) @binding(3) var<storage, read> block_input: array<f32>;
+@group(0) @binding(4) var<storage, read> d1: array<f32>;
+@group(0) @binding(5) var<storage, read> params: array<u32>;
+@group(0) @binding(6) var<storage, read_write> after_attention: array<f32>;
+@group(0) @binding(7) var<storage, read_write> mlp_input: array<f32>;
+
+var<workgroup> sandwich_partial: array<f32, 128>;
+var<workgroup> after_values: array<f32, 512>;
+
+@compute @workgroup_size(128)
+fn sandwich_prepare_mlp(@builtin(local_invocation_id) local: vec3u) {
+  var sum = 0.0;
+  for (var index = local.x; index < 512u; index += 128u) {
+    let value = projected[index];
+    sum = sum + value * value;
+  }
+  sandwich_partial[local.x] = sum;
+  workgroupBarrier();
+  for (var stride = 64u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      sandwich_partial[local.x] = sandwich_partial[local.x] + sandwich_partial[local.x + stride];
+    }
+    workgroupBarrier();
+  }
+  let projected_inverse = inverseSqrt(sandwich_partial[0] / 512.0 + 1e-6);
+  let attention_scale = 1.0 / (1.0 + exp(-bitcast<f32>(params[0])));
+  sum = 0.0;
+  for (var index = local.x; index < 512u; index += 128u) {
+    let normalized = (1.0 + post_norm[index]) * projected[index] * projected_inverse;
+    let value = block_input[index] + attention_scale * normalized;
+    after_values[index] = value;
+    after_attention[index] = value;
+    sum = sum + value * value;
+  }
+  sandwich_partial[local.x] = sum;
+  workgroupBarrier();
+  for (var stride = 64u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      sandwich_partial[local.x] = sandwich_partial[local.x] + sandwich_partial[local.x + stride];
+    }
+    workgroupBarrier();
+  }
+  let pre_inverse = inverseSqrt(sandwich_partial[0] / 512.0 + 1e-6);
+  for (var index = local.x; index < 512u; index += 128u) {
+    let normalized = (1.0 + pre_norm[index]) * after_values[index] * pre_inverse;
+    mlp_input[index] = normalized * d1[index];
+  }
+}
+`;
+
+export const HADAMARD_MLP_DELTA_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> mlp_input: array<f32>;
+@group(0) @binding(1) var<storage, read> d2: array<f32>;
+@group(0) @binding(2) var<storage, read> d3: array<f32>;
+@group(0) @binding(3) var<storage, read> after_attention: array<f32>;
+@group(0) @binding(4) var<storage, read> update_input: array<f32>;
+@group(0) @binding(5) var<storage, read_write> delta: array<f32>;
+
+var<workgroup> mlp_values: array<f32, 512>;
+
+fn hadamard(local_index: u32) {
+  for (var stride = 1u; stride < 512u; stride <<= 1u) {
+    for (var pair = local_index; pair < 256u; pair += 128u) {
+      let block = (pair / stride) * (stride * 2u);
+      let inner = pair % stride;
+      let left_index = block + inner;
+      let right_index = left_index + stride;
+      let left = mlp_values[left_index];
+      let right = mlp_values[right_index];
+      mlp_values[left_index] = left + right;
+      mlp_values[right_index] = left - right;
+    }
+    workgroupBarrier();
+  }
+}
+
+@compute @workgroup_size(128)
+fn hadamard_mlp_delta(@builtin(local_invocation_id) local: vec3u) {
+  for (var index = local.x; index < 512u; index += 128u) {
+    mlp_values[index] = mlp_input[index];
+  }
+  workgroupBarrier();
+  hadamard(local.x);
+  for (var index = local.x; index < 512u; index += 128u) {
+    let activated = mlp_values[index] * 0.04419417382415922 * d2[index];
+    mlp_values[index] = activated / (1.0 + exp(-activated));
+  }
+  workgroupBarrier();
+  hadamard(local.x);
+  for (var index = local.x; index < 512u; index += 128u) {
+    let mlp = mlp_values[index] * 0.04419417382415922 * d3[index];
+    delta[index] = after_attention[index] + mlp - update_input[index];
+  }
+}
+`;
+
 export const PREPARE_ATTENTION_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read> source: array<f32>;
 @group(0) @binding(1) var<storage, read_write> prepared: array<f32>;

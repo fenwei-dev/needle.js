@@ -53,7 +53,9 @@ TypeGPU's opt-in `fusedAttention: true` keeps Q/K/V, int8 KV state, attention, g
 
 For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok/s batched-matvec path: GPU softmax and cache kernels cost more than the readback they replace at this sequence length. It is therefore experimental rather than enabled by default. At a 98-token prompt it was approximately even with, and slightly ahead of, the non-resident all-GPU path.
 
-A complete resident engine would additionally keep mHC routing, hidden lanes, engram mixing, and the Hadamard MLP on GPU, reducing synchronization from about 56 groups to one boundary per generated token.
+`fusedMlp: true` continues through sandwich normalization and the fixed Hadamard MLP, returning the layer delta. It measured about **15 tok/s** and matched the same greedy output. It does not remove another boundary until mHC routing also becomes resident, so it is an architectural stepping stone rather than a performance recommendation.
+
+A complete resident engine would additionally keep mHC routing, hidden lanes, and engram mixing on GPU, reducing synchronization from about 56 groups to one boundary per generated token.
 
 ## Reproduce
 
@@ -69,6 +71,9 @@ bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0
 
 # TypeGPU resident-attention experiment
 bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --fused-attention
+
+# Continue through sandwich residuals and Hadamard MLP
+bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --fused-mlp
 ```
 
 The harness bundles `scripts/bench-browser.ts`, serves it locally, and drives `Bun.WebView` with the `webkit` backend so Chrome is not launched with `--disable-gpu`.

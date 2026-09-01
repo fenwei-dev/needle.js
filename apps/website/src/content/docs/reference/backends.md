@@ -36,6 +36,7 @@ const agent = await createNeedleTypeGPU({
     // device: existingGPUDevice,
     // minimumGpuRows: 0, // force all matvecs onto WebGPU
     // fusedAttention: true, // experimental resident int8 KV + attention
+    // fusedMlp: true, // also fuse sandwich residuals and Hadamard MLP
   },
 });
 ```
@@ -98,7 +99,9 @@ TypeGPU accepts `fusedAttention: true`. A backend-owned runtime session keeps Q/
 
 The session supports the published 512-dimensional, 8-query-head/4-KV-head geometry, int8 KV mode, and a combined sink/window span up to 512. Unsupported configurations automatically use the reference runtime.
 
-This cuts the forced-all-GPU path from about 83 host synchronization groups to about 56. It is opt-in because small-context WebGPU attention is currently slower than CPU attention despite removing readbacks. It is groundwork for a fully resident layer engine, where mHC routing and the Hadamard MLP would also remain on GPU.
+This cuts the forced-all-GPU path from about 83 host synchronization groups to about 56. `fusedMlp: true` extends the same command buffer through post-attention RMS normalization, the gated residual, pre-Hadamard normalization, two 512-point Walsh–Hadamard transforms, SiLU, and layer-delta construction.
+
+Both options are experimental. Small-context WebGPU attention is currently slower than CPU attention despite removing readbacks, and the MLP extension adds GPU work without removing another host boundary yet. They are groundwork for a fully resident layer engine where mHC routing and hidden lanes remain on GPU between layers.
 
 ## Custom backend
 

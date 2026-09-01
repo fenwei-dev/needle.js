@@ -8,11 +8,14 @@ import type {
   FusedAttentionResult,
   FusedAttentionSession,
   ResidentLayerRequest,
+  ResidentTokenSelection,
 } from "./backend.js";
 import { prepareCqActivation } from "./cq.js";
 import {
   ATTENTION_SCORES_WGSL,
   ATTENTION_SOFTMAX_GATE_WGSL,
+  CONFIDENCE_HEAD_WGSL,
+  CONFIDENCE_POOL_WGSL,
   ENGRAM_INJECT_WGSL,
   FINAL_NORM_WGSL,
   HADAMARD_MLP_DELTA_WGSL,
@@ -24,6 +27,7 @@ import {
   RMS_LANES_WGSL,
   RMS_NORM_512_WGSL,
   SANDWICH_PREPARE_MLP_WGSL,
+  SELECT_TOKEN_WGSL,
 } from "./typegpu-attention-kernel.js";
 import { CQ_MATVEC_WGSL, matrixParameters, webGpuMatrixData } from "./webgpu-kernel.js";
 
@@ -63,6 +67,9 @@ interface Pipelines {
   readonly engram: GPUComputePipeline;
   readonly norm512: GPUComputePipeline;
   readonly finalNorm: GPUComputePipeline;
+  readonly confidencePool: GPUComputePipeline;
+  readonly confidenceHead: GPUComputePipeline;
+  readonly selectToken: GPUComputePipeline;
 }
 
 export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
@@ -102,6 +109,16 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #finalHidden: GPUBuffer;
   readonly #preparedFinal: GPUBuffer;
   readonly #logits: GPUBuffer;
+  readonly #confidenceProbes: GPUBuffer | undefined;
+  readonly #confidenceProjection: GPUBuffer | undefined;
+  readonly #confidenceBias: GPUBuffer | undefined;
+  readonly #confidenceMaxima: GPUBuffer | undefined;
+  readonly #confidenceDenominators: GPUBuffer | undefined;
+  readonly #confidenceWeighted: GPUBuffer | undefined;
+  readonly #confidenceResult: GPUBuffer | undefined;
+  readonly #allowedTokens: GPUBuffer;
+  readonly #selectionParams: GPUBuffer;
+  readonly #selectionResult: GPUBuffer;
   readonly #staging: GPUBuffer;
   readonly #queryParams: GPUBuffer;
   readonly #kvParams: GPUBuffer;
@@ -134,8 +151,13 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   #prepareInputGroup: GPUBindGroup | undefined;
   #finalNormGroup: GPUBindGroup | undefined;
   #prepareFinalGroup: GPUBindGroup | undefined;
+  #confidenceInputGroup: GPUBindGroup | undefined;
+  #confidenceNextGroup: GPUBindGroup | undefined;
+  #confidenceHeadGroup: GPUBindGroup | undefined;
+  #selectionGroup: GPUBindGroup | undefined;
   #inputNormGroups = new WeakMap<CactLayer, GPUBindGroup>();
   #residentEnabled = false;
+  #collectConfidence = false;
   #kvAllocation = 0;
   #sinkLength = 0;
   #enabled = false;
@@ -236,6 +258,41 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       geometry.vocabularySize * 4,
       COPY_SRC,
     );
+    const confidence = weights.heads.get("confidence");
+    const supportedConfidence =
+      confidence?.probeCount === 8 &&
+      confidence.outputSize === 1 &&
+      confidence.probes.length === 4096 &&
+      confidence.projection.length === 4096;
+    this.#confidenceProbes = supportedConfidence
+      ? bufferWithData(device, "needle.confidence.probes", confidence.probes, STORAGE)
+      : undefined;
+    this.#confidenceProjection = supportedConfidence
+      ? bufferWithData(device, "needle.confidence.projection", confidence.projection, STORAGE)
+      : undefined;
+    this.#confidenceBias = supportedConfidence
+      ? bufferWithData(device, "needle.confidence.bias", confidence.bias, STORAGE)
+      : undefined;
+    this.#confidenceMaxima = supportedConfidence
+      ? storageBuffer(device, "needle.confidence.maxima", 8 * 4, COPY_DST)
+      : undefined;
+    this.#confidenceDenominators = supportedConfidence
+      ? storageBuffer(device, "needle.confidence.denominators", 8 * 4, COPY_DST)
+      : undefined;
+    this.#confidenceWeighted = supportedConfidence
+      ? storageBuffer(device, "needle.confidence.weighted", 4096 * 4, COPY_DST)
+      : undefined;
+    this.#confidenceResult = supportedConfidence
+      ? storageBuffer(device, "needle.confidence.result", 4, COPY_SRC)
+      : undefined;
+    this.#allowedTokens = storageBuffer(
+      device,
+      "needle.selection.allowed",
+      geometry.vocabularySize * 4,
+      COPY_DST,
+    );
+    this.#selectionParams = storageBuffer(device, "needle.selection.params", 8, COPY_DST);
+    this.#selectionResult = storageBuffer(device, "needle.selection.result", 8, COPY_SRC);
     this.#staging = device.createBuffer({
       label: "needle.attention.readback",
       size: Math.max(lanesBytes, geometry.vocabularySize * 4),
@@ -284,9 +341,34 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
           layer.hadamardD3.length === 512,
       ) &&
       options.sinkLength + geometry.kvWindow <= 512;
+    const confidenceAvailable = Boolean(
+      this.#confidenceMaxima &&
+        this.#confidenceDenominators &&
+        this.#confidenceWeighted &&
+        this.#confidenceResult,
+    );
     this.#residentEnabled =
-      this.#enabled && this.#residentLayers && this.#fuseRouting && !options.collectConfidence;
+      this.#enabled &&
+      this.#residentLayers &&
+      this.#fuseRouting &&
+      (!options.collectConfidence || confidenceAvailable);
+    this.#collectConfidence = this.#residentEnabled && options.collectConfidence;
     if (!this.#enabled) return false;
+    if (this.#collectConfidence) {
+      const maxima = new Float32Array(8);
+      maxima.fill(Number.NEGATIVE_INFINITY);
+      this.#device.queue.writeBuffer(this.#confidenceMaxima as GPUBuffer, 0, bufferSource(maxima));
+      this.#device.queue.writeBuffer(
+        this.#confidenceDenominators as GPUBuffer,
+        0,
+        bufferSource(new Float32Array(8)),
+      );
+      this.#device.queue.writeBuffer(
+        this.#confidenceWeighted as GPUBuffer,
+        0,
+        bufferSource(new Float32Array(4096)),
+      );
+    }
 
     this.#sinkLength = options.sinkLength;
     const allocation = Math.min(options.maximumLength, options.sinkLength + geometry.kvWindow);
@@ -331,7 +413,21 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       "Resident lane input must contain 2048 values",
     );
     this.#device.queue.writeBuffer(this.#lanesInput, 0, bufferSource(lanes));
+    if (this.#collectConfidence) {
+      const pipelines = await this.#pipelines;
+      const encoder = this.#device.createCommandEncoder({ label: "needle.confidence.embedding" });
+      const pass = encoder.beginComputePass({ label: "needle.confidence.pool-embedding" });
+      pass.setPipeline(pipelines.confidencePool);
+      pass.setBindGroup(0, this.#getConfidenceInputGroup(pipelines.confidencePool));
+      pass.dispatchWorkgroups(1);
+      pass.end();
+      this.#device.queue.submit([encoder.finish()]);
+    }
     return true;
+  }
+
+  residentLayersEnabled(): boolean {
+    return this.#residentEnabled;
   }
 
   async forwardResidentLayer(request: ResidentLayerRequest): Promise<void> {
@@ -467,6 +563,13 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     prepareInputPass.end();
 
     this.#encodeAttentionAndPost(encoder, layer, layerIndex, position, pipelines);
+    if (this.#collectConfidence) {
+      const confidencePass = encoder.beginComputePass({ label: "needle.confidence.pool-layer" });
+      confidencePass.setPipeline(pipelines.confidencePool);
+      confidencePass.setBindGroup(0, this.#getConfidenceNextGroup(pipelines.confidencePool));
+      confidencePass.dispatchWorkgroups(1);
+      confidencePass.end();
+    }
     encoder.copyBufferToBuffer(this.#nextLanes, 0, this.#lanesInput, 0, 2048 * 4);
     this.#device.queue.submit([encoder.finish()]);
   }
@@ -480,39 +583,86 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     if (!wantLogits) return null;
     const pipelines = await this.#pipelines;
     const embedding = this.#weights.embedding;
-    const params = this.#projectionParams[8];
-    invariant(params, "INVALID_CACT", "Final projection parameters are missing");
-    this.#device.queue.writeBuffer(
-      params,
-      0,
-      bufferSource(matrixParameters(embedding, 0, embedding.outputSize)),
-    );
     const encoder = this.#device.createCommandEncoder({ label: "needle.resident-token.final" });
-    const normPass = encoder.beginComputePass({ label: "needle.resident-token.final-norm" });
-    normPass.setPipeline(pipelines.finalNorm);
-    normPass.setBindGroup(0, this.#getFinalNormGroup(pipelines.finalNorm));
-    normPass.dispatchWorkgroups(1);
-    normPass.end();
-
-    const preparePass = encoder.beginComputePass({ label: "needle.resident-token.prepare-final" });
-    preparePass.setPipeline(pipelines.prepare);
-    preparePass.setBindGroup(0, this.#getPrepareFinalGroup(pipelines.prepare));
-    preparePass.dispatchWorkgroups(4);
-    preparePass.end();
-
-    const logitsPass = encoder.beginComputePass({ label: "needle.resident-token.logits" });
-    logitsPass.setPipeline(pipelines.cq);
-    logitsPass.setBindGroup(
-      0,
-      this.#projectionGroup(embedding, this.#preparedFinal, params, this.#logits, pipelines.cq),
-    );
-    logitsPass.dispatchWorkgroups(embedding.outputSize);
-    logitsPass.end();
+    this.#encodeResidentFinal(encoder, pipelines);
     encoder.copyBufferToBuffer(this.#logits, 0, this.#staging, 0, embedding.outputSize * 4);
     this.#device.queue.submit([encoder.finish()]);
     await this.#staging.mapAsync(MAP_READ, 0, embedding.outputSize * 4);
     try {
       return new Float32Array(this.#staging.getMappedRange(0, embedding.outputSize * 4)).slice();
+    } finally {
+      this.#staging.unmap();
+    }
+  }
+
+  async finishResidentTokenForSelection(): Promise<void> {
+    invariant(
+      this.#residentEnabled && !this.#disposed,
+      "BACKEND_UNAVAILABLE",
+      "Resident layers are off",
+    );
+    const pipelines = await this.#pipelines;
+    const encoder = this.#device.createCommandEncoder({
+      label: "needle.resident-token.final-select",
+    });
+    this.#encodeResidentFinal(encoder, pipelines);
+    this.#device.queue.submit([encoder.finish()]);
+  }
+
+  async selectResidentToken(allowedTokenIds?: Uint32Array): Promise<ResidentTokenSelection> {
+    invariant(
+      this.#residentEnabled && !this.#disposed,
+      "BACKEND_UNAVAILABLE",
+      "Resident layers are off",
+    );
+    const count = allowedTokenIds?.length ?? this.#weights.geometry.vocabularySize;
+    invariant(
+      count > 0 && count <= 8192,
+      "INVALID_CACT",
+      "Allowed token set is empty or too large",
+    );
+    if (allowedTokenIds) {
+      this.#device.queue.writeBuffer(this.#allowedTokens, 0, bufferSource(allowedTokenIds));
+    }
+    this.#device.queue.writeBuffer(
+      this.#selectionParams,
+      0,
+      bufferSource(new Uint32Array([count, allowedTokenIds ? 1 : 0])),
+    );
+    const pipelines = await this.#pipelines;
+    const encoder = this.#device.createCommandEncoder({ label: "needle.selection.encoder" });
+    const pass = encoder.beginComputePass({ label: "needle.selection.argmax" });
+    pass.setPipeline(pipelines.selectToken);
+    pass.setBindGroup(0, this.#getSelectionGroup(pipelines.selectToken));
+    pass.dispatchWorkgroups(1);
+    pass.end();
+    encoder.copyBufferToBuffer(this.#selectionResult, 0, this.#staging, 0, 8);
+    this.#device.queue.submit([encoder.finish()]);
+    await this.#staging.mapAsync(MAP_READ, 0, 8);
+    try {
+      const view = new DataView(this.#staging.getMappedRange(0, 8));
+      return { id: view.getUint32(0, true), logProbability: view.getFloat32(4, true) };
+    } finally {
+      this.#staging.unmap();
+    }
+  }
+
+  async residentConfidence(): Promise<number | undefined> {
+    if (!this.#collectConfidence || !this.#residentEnabled || this.#disposed) return undefined;
+    const result = this.#confidenceResult;
+    invariant(result, "BACKEND_UNAVAILABLE", "Resident confidence output is missing");
+    const pipelines = await this.#pipelines;
+    const encoder = this.#device.createCommandEncoder({ label: "needle.confidence.final" });
+    const pass = encoder.beginComputePass({ label: "needle.confidence.head" });
+    pass.setPipeline(pipelines.confidenceHead);
+    pass.setBindGroup(0, this.#getConfidenceHeadGroup(pipelines.confidenceHead));
+    pass.dispatchWorkgroups(1);
+    pass.end();
+    encoder.copyBufferToBuffer(result, 0, this.#staging, 0, 4);
+    this.#device.queue.submit([encoder.finish()]);
+    await this.#staging.mapAsync(MAP_READ, 0, 4);
+    try {
+      return new Float32Array(this.#staging.getMappedRange(0, 4))[0];
     } finally {
       this.#staging.unmap();
     }
@@ -789,6 +939,9 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       this.#finalHidden,
       this.#preparedFinal,
       this.#logits,
+      this.#allowedTokens,
+      this.#selectionParams,
+      this.#selectionResult,
       this.#staging,
       this.#queryParams,
       this.#kvParams,
@@ -797,6 +950,17 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       ...this.#projectionParams,
     ]) {
       buffer.destroy();
+    }
+    for (const buffer of [
+      this.#confidenceProbes,
+      this.#confidenceProjection,
+      this.#confidenceBias,
+      this.#confidenceMaxima,
+      this.#confidenceDenominators,
+      this.#confidenceWeighted,
+      this.#confidenceResult,
+    ]) {
+      buffer?.destroy();
     }
     for (const matrix of this.#allocatedMatrices) {
       matrix.packed.destroy();
@@ -812,6 +976,37 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       norms.d2.destroy();
       norms.d3.destroy();
     }
+  }
+
+  #encodeResidentFinal(encoder: GPUCommandEncoder, pipelines: Pipelines): void {
+    const embedding = this.#weights.embedding;
+    const params = this.#projectionParams[8];
+    invariant(params, "INVALID_CACT", "Final projection parameters are missing");
+    this.#device.queue.writeBuffer(
+      params,
+      0,
+      bufferSource(matrixParameters(embedding, 0, embedding.outputSize)),
+    );
+    const normPass = encoder.beginComputePass({ label: "needle.resident-token.final-norm" });
+    normPass.setPipeline(pipelines.finalNorm);
+    normPass.setBindGroup(0, this.#getFinalNormGroup(pipelines.finalNorm));
+    normPass.dispatchWorkgroups(1);
+    normPass.end();
+
+    const preparePass = encoder.beginComputePass({ label: "needle.resident-token.prepare-final" });
+    preparePass.setPipeline(pipelines.prepare);
+    preparePass.setBindGroup(0, this.#getPrepareFinalGroup(pipelines.prepare));
+    preparePass.dispatchWorkgroups(4);
+    preparePass.end();
+
+    const logitsPass = encoder.beginComputePass({ label: "needle.resident-token.logits" });
+    logitsPass.setPipeline(pipelines.cq);
+    logitsPass.setBindGroup(
+      0,
+      this.#projectionGroup(embedding, this.#preparedFinal, params, this.#logits, pipelines.cq),
+    );
+    logitsPass.dispatchWorkgroups(embedding.outputSize);
+    logitsPass.end();
   }
 
   #writeAttentionParams(layer: CactLayer, layerIndex: number, position: number): void {
@@ -1146,6 +1341,79 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     return this.#prepareFinalGroup;
   }
 
+  #getConfidenceInputGroup(pipeline: GPUComputePipeline): GPUBindGroup {
+    if (this.#confidenceInputGroup) return this.#confidenceInputGroup;
+    this.#confidenceInputGroup = this.#createConfidencePoolGroup(this.#lanesInput, pipeline);
+    return this.#confidenceInputGroup;
+  }
+
+  #getConfidenceNextGroup(pipeline: GPUComputePipeline): GPUBindGroup {
+    if (this.#confidenceNextGroup) return this.#confidenceNextGroup;
+    this.#confidenceNextGroup = this.#createConfidencePoolGroup(this.#nextLanes, pipeline);
+    return this.#confidenceNextGroup;
+  }
+
+  #createConfidencePoolGroup(source: GPUBuffer, pipeline: GPUComputePipeline): GPUBindGroup {
+    const probes = this.#confidenceProbes;
+    const maxima = this.#confidenceMaxima;
+    const denominators = this.#confidenceDenominators;
+    const weighted = this.#confidenceWeighted;
+    invariant(
+      probes && maxima && denominators && weighted,
+      "BACKEND_UNAVAILABLE",
+      "Resident confidence buffers are missing",
+    );
+    return this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: source } },
+        { binding: 1, resource: { buffer: probes } },
+        { binding: 2, resource: { buffer: maxima } },
+        { binding: 3, resource: { buffer: denominators } },
+        { binding: 4, resource: { buffer: weighted } },
+      ],
+    });
+  }
+
+  #getConfidenceHeadGroup(pipeline: GPUComputePipeline): GPUBindGroup {
+    if (this.#confidenceHeadGroup) return this.#confidenceHeadGroup;
+    const denominators = this.#confidenceDenominators;
+    const weighted = this.#confidenceWeighted;
+    const projection = this.#confidenceProjection;
+    const bias = this.#confidenceBias;
+    const result = this.#confidenceResult;
+    invariant(
+      denominators && weighted && projection && bias && result,
+      "BACKEND_UNAVAILABLE",
+      "Resident confidence head is missing",
+    );
+    this.#confidenceHeadGroup = this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: denominators } },
+        { binding: 1, resource: { buffer: weighted } },
+        { binding: 2, resource: { buffer: projection } },
+        { binding: 3, resource: { buffer: bias } },
+        { binding: 4, resource: { buffer: result } },
+      ],
+    });
+    return this.#confidenceHeadGroup;
+  }
+
+  #getSelectionGroup(pipeline: GPUComputePipeline): GPUBindGroup {
+    if (this.#selectionGroup) return this.#selectionGroup;
+    this.#selectionGroup = this.#device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.#logits } },
+        { binding: 1, resource: { buffer: this.#allowedTokens } },
+        { binding: 2, resource: { buffer: this.#selectionParams } },
+        { binding: 3, resource: { buffer: this.#selectionResult } },
+      ],
+    });
+    return this.#selectionGroup;
+  }
+
   #queryGroup(layer: CactLayer, pipeline: GPUComputePipeline): GPUBindGroup {
     const cached = this.#queryGroups.get(layer);
     if (cached) return cached;
@@ -1312,6 +1580,9 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     ["engram", ENGRAM_INJECT_WGSL, "engram_inject"],
     ["norm-512", RMS_NORM_512_WGSL, "rms_norm_512"],
     ["final-norm", FINAL_NORM_WGSL, "final_norm"],
+    ["confidence-pool", CONFIDENCE_POOL_WGSL, "confidence_pool"],
+    ["confidence-head", CONFIDENCE_HEAD_WGSL, "confidence_head"],
+    ["select-token", SELECT_TOKEN_WGSL, "select_token"],
   ] as const;
   const pipelines = await Promise.all(
     descriptors.map(async ([label, source, entryPoint]) => {
@@ -1344,6 +1615,9 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     engram,
     norm512,
     finalNorm,
+    confidencePool,
+    confidenceHead,
+    selectToken,
   ] = pipelines;
   invariant(
     cq &&
@@ -1359,7 +1633,10 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
       mhcPre &&
       engram &&
       norm512 &&
-      finalNorm,
+      finalNorm &&
+      confidencePool &&
+      confidenceHead &&
+      selectToken,
     "WEBGPU_UNAVAILABLE",
     "Attention pipeline failed",
   );
@@ -1378,6 +1655,9 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     engram,
     norm512,
     finalNorm,
+    confidencePool,
+    confidenceHead,
+    selectToken,
   };
 }
 

@@ -8,6 +8,7 @@ export type {
   MatrixRowRange,
   MatvecRequest,
   ResidentLayerRequest,
+  ResidentTokenSelection,
 } from "./backends/backend.js";
 export { NeedleError, type NeedleErrorCode } from "./errors.js";
 export {

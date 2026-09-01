@@ -1,5 +1,5 @@
 import type { BackendSelection, GenerationResult } from "../src/index.js";
-import { NeedleModel } from "../src/index.js";
+import { BOS_TOKEN_ID, Needle, NeedleModel } from "../src/index.js";
 
 type BackendName = "cpu" | "typegpu" | "vgpu";
 
@@ -15,6 +15,8 @@ export interface BrowserBenchOptions {
   fusedMlp?: boolean;
   fusedRouting?: boolean;
   residentLayers?: boolean;
+  collectConfidence?: boolean;
+  toolParity?: boolean;
 }
 
 export interface RunSample {
@@ -33,6 +35,10 @@ export interface BackendResult {
   runs: RunSample[];
   generatedText?: string;
   finishReason?: GenerationResult["finishReason"];
+  confidence?: number;
+  toolRawCall?: string;
+  toolConfidence?: number | null;
+  toolElapsedMs?: number;
 }
 
 async function measureBackend(
@@ -71,6 +77,14 @@ async function measureBackend(
   }
 
   const loadMs = performance.now() - startedLoad;
+  let confidence: number | undefined;
+  if (options.collectConfidence) {
+    const runtime = model.createRuntime({ collectConfidence: true });
+    const promptIds = [BOS_TOKEN_ID, ...model.tokenizer.encode(options.prompt)];
+    runtime.reset({ maximumLength: promptIds.length });
+    await runtime.prefill(promptIds);
+    confidence = await runtime.resolveConfidence();
+  }
   const generateOptions = { maxNewTokens: options.tokens, temperature: 0 as const };
 
   try {
@@ -92,6 +106,25 @@ async function measureBackend(
       });
     }
 
+    let toolRawCall: string | undefined;
+    let toolConfidence: number | null | undefined;
+    let toolElapsedMs: number | undefined;
+    if (options.toolParity) {
+      const agent = new Needle(model, {
+        tools: [
+          {
+            name: "turn_on_flashlight",
+            description: "Turn on the flashlight",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+      });
+      const toolStarted = performance.now();
+      const response = await agent.complete("Turn on the flashlight.");
+      toolElapsedMs = performance.now() - toolStarted;
+      toolRawCall = response.rawCall;
+      toolConfidence = response.confidence;
+    }
     return {
       backend,
       status: "ok",
@@ -99,6 +132,10 @@ async function measureBackend(
       warmupMs,
       runs,
       ...(last ? { generatedText: last.text, finishReason: last.finishReason } : {}),
+      ...(confidence === undefined ? {} : { confidence }),
+      ...(toolRawCall === undefined ? {} : { toolRawCall }),
+      ...(toolConfidence === undefined ? {} : { toolConfidence }),
+      ...(toolElapsedMs === undefined ? {} : { toolElapsedMs }),
     };
   } catch (error) {
     return {

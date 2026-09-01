@@ -166,6 +166,173 @@ fn final_norm(@builtin(local_invocation_id) local: vec3u) {
 }
 `;
 
+export const CONFIDENCE_POOL_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> lanes: array<f32>;
+@group(0) @binding(1) var<storage, read> probes: array<f32>;
+@group(0) @binding(2) var<storage, read_write> maxima: array<f32>;
+@group(0) @binding(3) var<storage, read_write> denominators: array<f32>;
+@group(0) @binding(4) var<storage, read_write> weighted: array<f32>;
+
+var<workgroup> probe_partial: array<f32, 1024>;
+var<workgroup> add_weight: array<f32, 8>;
+var<workgroup> old_scale: array<f32, 8>;
+
+fn cell_value(column: u32) -> f32 {
+  return 0.25 * (
+    lanes[column] + lanes[512u + column] + lanes[1024u + column] + lanes[1536u + column]
+  );
+}
+
+@compute @workgroup_size(128)
+fn confidence_pool(@builtin(local_invocation_id) local: vec3u) {
+  for (var probe = 0u; probe < 8u; probe++) {
+    var sum = 0.0;
+    for (var column = local.x; column < 512u; column += 128u) {
+      sum = sum + cell_value(column) * probes[probe * 512u + column];
+    }
+    probe_partial[probe * 128u + local.x] = sum;
+  }
+  workgroupBarrier();
+  for (var stride = 64u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      for (var probe = 0u; probe < 8u; probe++) {
+        let index = probe * 128u + local.x;
+        probe_partial[index] = probe_partial[index] + probe_partial[index + stride];
+      }
+    }
+    workgroupBarrier();
+  }
+  if (local.x < 8u) {
+    let probe = local.x;
+    let score = probe_partial[probe * 128u] * 0.04419417382415922;
+    let previous = maxima[probe];
+    if (score <= previous) {
+      add_weight[probe] = exp(score - previous);
+      old_scale[probe] = 1.0;
+      denominators[probe] = denominators[probe] + add_weight[probe];
+    } else {
+      var scale = 0.0;
+      if (previous > -3.0e38) { scale = exp(previous - score); }
+      add_weight[probe] = 1.0;
+      old_scale[probe] = scale;
+      denominators[probe] = denominators[probe] * scale + 1.0;
+      maxima[probe] = score;
+    }
+  }
+  workgroupBarrier();
+  for (var probe = 0u; probe < 8u; probe++) {
+    for (var column = local.x; column < 512u; column += 128u) {
+      let index = probe * 512u + column;
+      weighted[index] =
+        weighted[index] * old_scale[probe] + add_weight[probe] * cell_value(column);
+    }
+  }
+}
+`;
+
+export const CONFIDENCE_HEAD_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> denominators: array<f32>;
+@group(0) @binding(1) var<storage, read> weighted: array<f32>;
+@group(0) @binding(2) var<storage, read> projection: array<f32>;
+@group(0) @binding(3) var<storage, read> bias: array<f32>;
+@group(0) @binding(4) var<storage, read_write> result: array<f32>;
+
+var<workgroup> confidence_partial: array<f32, 256>;
+
+@compute @workgroup_size(256)
+fn confidence_head(@builtin(local_invocation_id) local: vec3u) {
+  var sum = 0.0;
+  for (var index = local.x; index < 4096u; index += 256u) {
+    let probe = index / 512u;
+    let pooled = weighted[index] / max(denominators[probe], 1e-30);
+    sum = sum + projection[index] * pooled;
+  }
+  confidence_partial[local.x] = sum;
+  workgroupBarrier();
+  for (var stride = 128u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      confidence_partial[local.x] = confidence_partial[local.x] + confidence_partial[local.x + stride];
+    }
+    workgroupBarrier();
+  }
+  if (local.x == 0u) {
+    let logit = confidence_partial[0] + bias[0];
+    result[0] = 1.0 / (1.0 + exp(-logit));
+  }
+}
+`;
+
+export const SELECT_TOKEN_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> logits: array<f32>;
+@group(0) @binding(1) var<storage, read> allowed: array<u32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@group(0) @binding(3) var<storage, read_write> result: array<u32>;
+
+var<workgroup> best_values: array<f32, 256>;
+var<workgroup> best_tokens: array<u32, 256>;
+var<workgroup> all_maxima: array<f32, 256>;
+var<workgroup> probability_sums: array<f32, 256>;
+
+@compute @workgroup_size(256)
+fn select_token(@builtin(local_invocation_id) local: vec3u) {
+  let allowed_count = params[0];
+  let use_allowed = params[1] != 0u;
+  var best_value = -3.402823466e38;
+  var best_token = 0xffffffffu;
+  for (var candidate = local.x; candidate < allowed_count; candidate += 256u) {
+    var token = candidate;
+    if (use_allowed) { token = allowed[candidate]; }
+    let value = logits[token];
+    if (value > best_value || (value == best_value && token < best_token)) {
+      best_value = value;
+      best_token = token;
+    }
+  }
+  var all_maximum = -3.402823466e38;
+  for (var token = local.x; token < 8192u; token += 256u) {
+    all_maximum = max(all_maximum, logits[token]);
+  }
+  best_values[local.x] = best_value;
+  best_tokens[local.x] = best_token;
+  all_maxima[local.x] = all_maximum;
+  workgroupBarrier();
+  for (var stride = 128u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      let right_value = best_values[local.x + stride];
+      let right_token = best_tokens[local.x + stride];
+      if (
+        right_value > best_values[local.x] ||
+        (right_value == best_values[local.x] && right_token < best_tokens[local.x])
+      ) {
+        best_values[local.x] = right_value;
+        best_tokens[local.x] = right_token;
+      }
+      all_maxima[local.x] = max(all_maxima[local.x], all_maxima[local.x + stride]);
+    }
+    workgroupBarrier();
+  }
+  let maximum = all_maxima[0];
+  var sum = 0.0;
+  for (var token = local.x; token < 8192u; token += 256u) {
+    sum = sum + exp(logits[token] - maximum);
+  }
+  probability_sums[local.x] = sum;
+  workgroupBarrier();
+  for (var stride = 128u; stride > 0u; stride >>= 1u) {
+    if (local.x < stride) {
+      probability_sums[local.x] = probability_sums[local.x] + probability_sums[local.x + stride];
+    }
+    workgroupBarrier();
+  }
+  if (local.x == 0u) {
+    let token = best_tokens[0];
+    let log_probability = logits[token] - maximum - log(probability_sums[0]);
+    result[0] = token;
+    result[1] = bitcast<u32>(log_probability);
+  }
+}
+`;
+
 export const QUERY_NORM_ROPE_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> query: array<f32>;
 @group(0) @binding(1) var<storage, read> norm_scale: array<f32>;

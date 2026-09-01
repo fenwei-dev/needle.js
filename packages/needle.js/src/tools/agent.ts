@@ -1,5 +1,4 @@
 import { invariant, NeedleError } from "../errors.js";
-import { argmax, logSoftmaxAt } from "../model/math.js";
 import { type LoadModelOptions, NeedleModel } from "../model/model.js";
 import { BOS_TOKEN_ID, CHAT_MARKERS, EOS_TOKEN_ID, TokenPieceType } from "../model/tokenizer.js";
 import { type GrammarToolCall, ToolCallGrammar } from "./grammar.js";
@@ -124,7 +123,7 @@ export class Needle {
     const sinkLength = Math.min(this.options.prefixSinkTokens ?? 160, promptIds.length);
     runtime.reset({ maximumLength, sinkLength });
     const prefillStarted = performance.now();
-    let logits = await runtime.prefill(promptIds, options.signal);
+    let selection = await runtime.prefillSelected(promptIds, undefined, options.signal);
     const prefillMs = performance.now() - prefillStarted;
     const decodeStarted = performance.now();
     const reasoningIds: number[] = [];
@@ -143,19 +142,14 @@ export class Needle {
         throw new NeedleError("GENERATION_ABORTED", "Needle completion was aborted", {
           cause: options.signal.reason,
         });
-      const token = argmax(logits);
+      const token = selection.id;
       if (token === toolCallStartId) {
-        const next = await runtime.step(token, { signal: options.signal });
-        invariant(next !== null, "INVALID_CACT", "Tool-call marker step returned no logits");
-        logits = next;
         openedCall = true;
         break;
       }
       if (token === EOS_TOKEN_ID || token === imEndId) break;
       reasoningIds.push(token);
-      const next = await runtime.step(token, { signal: options.signal });
-      invariant(next !== null, "INVALID_CACT", "Reasoning step returned no logits");
-      logits = next;
+      selection = await runtime.stepSelected(token, undefined, options.signal);
     }
 
     let rawCall = "[]";
@@ -165,11 +159,12 @@ export class Needle {
       const chunks: Uint8Array[] = [];
       let outputBytes = 0;
       const remaining = maximumNewTokens - reasoningIds.length;
+      let pendingToken = selection.id;
       for (let step = 0; step < remaining && runtime.position < maximumLength; step++) {
-        let bestToken = -1;
-        let bestLogit = Number.NEGATIVE_INFINITY;
-        let bestGrammar: ToolCallGrammar | undefined;
-        let bestBytes: Uint8Array | undefined;
+        const candidates = new Map<
+          number,
+          { readonly grammar: ToolCallGrammar; readonly bytes: Uint8Array }
+        >();
         for (let token = 0; token < tokenizer.vocabularySize; token++) {
           const type = tokenizer.types[token];
           if (type !== TokenPieceType.Normal && type !== TokenPieceType.Byte) continue;
@@ -177,34 +172,40 @@ export class Needle {
           if (bytes.byteLength === 0 || outputBytes + bytes.byteLength > 65_536) continue;
           const candidate = grammar.clone();
           if (!candidate.feed(bytes)) continue;
-          const logit = logits[token] ?? Number.NEGATIVE_INFINITY;
-          if (logit > bestLogit) {
-            bestToken = token;
-            bestLogit = logit;
-            bestGrammar = candidate;
-            bestBytes = bytes;
-          }
+          candidates.set(token, { grammar: candidate, bytes });
         }
-        if (bestToken < 0 || !bestGrammar || !bestBytes) {
+        if (candidates.size === 0) {
           throw new NeedleError(
             "GRAMMAR_DEAD_END",
             "No token can continue the schema-constrained tool call",
           );
         }
-        chunks.push(bestBytes);
-        outputBytes += bestBytes.byteLength;
+        const allowedTokenIds = Uint32Array.from(candidates.keys());
+        const constrained = await runtime.stepSelected(
+          pendingToken,
+          allowedTokenIds,
+          options.signal,
+        );
+        const bestToken = constrained.id;
+        const chosen = candidates.get(bestToken);
+        if (!chosen) {
+          throw new NeedleError(
+            "GRAMMAR_DEAD_END",
+            `Backend selected disallowed token ${bestToken}`,
+          );
+        }
+        chunks.push(chosen.bytes);
+        outputBytes += chosen.bytes.byteLength;
         callIds.push(bestToken);
-        callLogProbabilities.push(logSoftmaxAt(logits, bestToken));
-        grammar = bestGrammar;
+        callLogProbabilities.push(constrained.logProbability);
+        grammar = chosen.grammar;
         if (grammar.complete) {
           grammarCalls = grammar.calls;
           if (runtime.position < maximumLength)
             await runtime.step(bestToken, { wantLogits: false, signal: options.signal });
           break;
         }
-        const next = await runtime.step(bestToken, { signal: options.signal });
-        invariant(next !== null, "INVALID_CACT", "Constrained decode step returned no logits");
-        logits = next;
+        pendingToken = bestToken;
         grammarCalls = grammar.calls;
       }
       const joined = new Uint8Array(outputBytes);
@@ -234,7 +235,7 @@ export class Needle {
     }));
     const rawReasoning = tokenizer.decode(reasoningIds);
     const reasoning = cleanReasoning(rawReasoning);
-    const headConfidence = runtime.confidence();
+    const headConfidence = await runtime.resolveConfidence();
     const decodeConfidence = callLogProbabilities.length
       ? Math.exp(Math.min(...callLogProbabilities))
       : undefined;

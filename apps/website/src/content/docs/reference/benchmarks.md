@@ -64,7 +64,20 @@ For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok
 | Standard prompt, 32 generated tokens | 41.6 tok/s | **51.4 tok/s** |
 | 98-token prompt, 8 generated tokens | 4.68 tok/s | **5.40 tok/s** |
 
-The resident path matched CPU greedy text in both workloads. Confidence collection currently selects the non-resident path because the confidence pool consumes every layer's hidden mean.
+The resident path matched CPU greedy text in both workloads.
+
+### Resident tool selection and confidence
+
+For `Needle.complete()`, JavaScript still advances the byte grammar, but it sends only the currently allowed token IDs to WebGPU. A 256-lane reduction selects the best allowed token while computing log-sum-exp over the full vocabulary, and reads back an 8-byte token/log-probability pair instead of 32 KB of logits.
+
+The resident confidence implementation maintains eight online probe pools from the token embedding and all layer means, then evaluates the one-output confidence projection on GPU. On the constrained flashlight integration:
+
+| Backend | Raw call | Final confidence | Elapsed |
+| --- | --- | ---: | ---: |
+| CPU | `[{"name":"turn_on_flashlight","arguments":{}}]` | 0.7526 | 1,150 ms |
+| TypeGPU resident | same | 0.7563 | **1,012 ms** |
+
+A prompt-only probe check differed by about `1.1e-9`; the final turn's small confidence difference includes accumulated f32 model/log-probability differences. Both paths selected the exact same schema-constrained token sequence.
 
 ## Reproduce
 
@@ -89,6 +102,9 @@ bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --fused-routing
 
 # Retain lanes and run all 27 layers without host readback
 bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers
+
+# Compare resident confidence and constrained tool selection
+bun run --cwd packages/needle.js bench -- --minimum-gpu-rows 0 --resident-layers --confidence --tool-parity
 ```
 
 The harness bundles `scripts/bench-browser.ts`, serves it locally, and drives `Bun.WebView` with the `webkit` backend so Chrome is not launched with `--disable-gpu`.

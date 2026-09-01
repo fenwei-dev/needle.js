@@ -2,13 +2,16 @@ import type {
   FusedAttentionSession,
   InferenceBackend,
   MatvecRequest,
+  ResidentTokenSelection,
 } from "../backends/backend.js";
 import { denseMatvec } from "../backends/cq.js";
 import { invariant, NeedleError } from "../errors.js";
 import type { CactLayer, CactProbeHead, CactWeights } from "./cact.js";
 import {
   applyRope,
+  argmax,
   hadamardMlp,
+  logSoftmaxAt,
   rmsNorm,
   rmsUnit,
   sigmoid,
@@ -120,6 +123,9 @@ export class NeedleRuntime {
   #confidencePool: OnlineProbePool | undefined;
   #fusedAttention: FusedAttentionSession | undefined;
   #fusedAttentionEnabled = false;
+  #usesResidentConfidence = false;
+  #selectionRequest: Uint32Array | null | undefined;
+  #selectionResult: ResidentTokenSelection | undefined;
 
   constructor(weights: CactWeights, backend: InferenceBackend, options: RuntimeOptions = {}) {
     this.weights = weights;
@@ -149,6 +155,8 @@ export class NeedleRuntime {
     this.#sinkLength = Math.min(Math.max(options.sinkLength ?? 0, 0), options.maximumLength);
     this.#position = 0;
     this.#history = [];
+    this.#selectionRequest = undefined;
+    this.#selectionResult = undefined;
 
     const window = geometry.kvWindow;
     this.#kvAllocation =
@@ -200,8 +208,13 @@ export class NeedleRuntime {
     this.#engramPosition = 0;
 
     const confidence = this.weights.heads.get("confidence");
+    this.#usesResidentConfidence = Boolean(
+      this.options.collectConfidence !== false &&
+        this.#fusedAttention?.residentLayersEnabled?.() &&
+        this.#fusedAttention.residentConfidence,
+    );
     this.#confidencePool =
-      this.options.collectConfidence !== false && confidence
+      this.options.collectConfidence !== false && confidence && !this.#usesResidentConfidence
         ? new OnlineProbePool(confidence, geometry.modelDimension)
         : undefined;
   }
@@ -222,6 +235,41 @@ export class NeedleRuntime {
     }
     invariant(logits !== null, "INVALID_CACT", "Prefill did not produce final logits");
     return logits;
+  }
+
+  async prefillSelected(
+    tokens: readonly number[],
+    allowedTokenIds?: Uint32Array,
+    signal?: AbortSignal,
+  ): Promise<ResidentTokenSelection> {
+    invariant(tokens.length > 0, "INVALID_CACT", "Cannot prefill an empty token sequence");
+    for (let index = 0; index + 1 < tokens.length; index++) {
+      await this.step(tokens[index] ?? 0, { wantLogits: false, signal });
+    }
+    return this.stepSelected(tokens[tokens.length - 1] ?? 0, allowedTokenIds, signal);
+  }
+
+  async stepSelected(
+    token: number,
+    allowedTokenIds?: Uint32Array,
+    signal?: AbortSignal,
+  ): Promise<ResidentTokenSelection> {
+    invariant(
+      this.#selectionRequest === undefined,
+      "BACKEND_UNAVAILABLE",
+      "Selection is already active",
+    );
+    this.#selectionRequest = allowedTokenIds ?? null;
+    this.#selectionResult = undefined;
+    try {
+      await this.step(token, { signal });
+      const result = this.#selectionResult;
+      invariant(result, "BACKEND_UNAVAILABLE", "Token selection did not produce a result");
+      return result;
+    } finally {
+      this.#selectionRequest = undefined;
+      this.#selectionResult = undefined;
+    }
   }
 
   async step(
@@ -288,7 +336,18 @@ export class NeedleRuntime {
             : {}),
         });
       }
-      residentLogits = await this.#fusedAttention.finishResidentToken(options.wantLogits !== false);
+      if (
+        this.#selectionRequest !== undefined &&
+        this.#fusedAttention.finishResidentTokenForSelection &&
+        this.#fusedAttention.selectResidentToken
+      ) {
+        await this.#fusedAttention.finishResidentTokenForSelection();
+        residentLogits = null;
+      } else {
+        residentLogits = await this.#fusedAttention.finishResidentToken(
+          options.wantLogits !== false,
+        );
+      }
     } else {
       for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
         if (options.signal?.aborted)
@@ -469,6 +528,16 @@ export class NeedleRuntime {
     }
 
     this.#position++;
+    if (
+      usingResidentLayers &&
+      this.#selectionRequest !== undefined &&
+      this.#fusedAttention?.selectResidentToken
+    ) {
+      this.#selectionResult = await this.#fusedAttention.selectResidentToken(
+        this.#selectionRequest ?? undefined,
+      );
+      return null;
+    }
     if (options.wantLogits === false) return null;
     if (usingResidentLayers) {
       invariant(residentLogits, "BACKEND_UNAVAILABLE", "Resident logits are missing");
@@ -481,7 +550,12 @@ export class NeedleRuntime {
       mean[column] = sum / lanes;
     }
     const final = rmsNorm(mean, this.weights.finalNorm);
-    return this.backend.matvec(this.weights.embedding, final);
+    const logits = await this.backend.matvec(this.weights.embedding, final);
+    if (this.#selectionRequest !== undefined) {
+      this.#selectionResult = selectToken(logits, this.#selectionRequest);
+      return null;
+    }
+    return logits;
   }
 
   #attentionDelta(
@@ -531,6 +605,13 @@ export class NeedleRuntime {
       `Backend returned ${outputs.length} results for ${requests.length} matvecs`,
     );
     return outputs as { [Index in keyof Requests]: Float32Array };
+  }
+
+  async resolveConfidence(): Promise<number | undefined> {
+    if (this.#usesResidentConfidence && this.#fusedAttention?.residentConfidence) {
+      return this.#fusedAttention.residentConfidence();
+    }
+    return this.confidence();
   }
 
   confidence(): number | undefined {
@@ -762,6 +843,30 @@ export class NeedleRuntime {
     this.#engramPosition++;
     return [keys, values];
   }
+}
+
+function selectToken(
+  logits: Float32Array,
+  allowedTokenIds: Uint32Array | null,
+): ResidentTokenSelection {
+  if (!allowedTokenIds) {
+    const id = argmax(logits);
+    return { id, logProbability: logSoftmaxAt(logits, id) };
+  }
+  invariant(allowedTokenIds.length > 0, "INVALID_CACT", "Allowed token set is empty");
+  let id = allowedTokenIds[0] ?? 0;
+  invariant(id < logits.length, "INVALID_CACT", `Token ${id} is outside logits`);
+  let best = logits[id] ?? Number.NEGATIVE_INFINITY;
+  for (let index = 1; index < allowedTokenIds.length; index++) {
+    const candidate = allowedTokenIds[index] ?? 0;
+    invariant(candidate < logits.length, "INVALID_CACT", `Token ${candidate} is outside logits`);
+    const value = logits[candidate] ?? Number.NEGATIVE_INFINITY;
+    if (value > best) {
+      best = value;
+      id = candidate;
+    }
+  }
+  return { id, logProbability: logSoftmaxAt(logits, id) };
 }
 
 function roundTiesToEven(value: number): number {

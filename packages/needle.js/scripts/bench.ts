@@ -29,6 +29,8 @@ interface CliOptions {
   fusedMlp: boolean;
   fusedRouting: boolean;
   residentLayers: boolean;
+  collectConfidence: boolean;
+  toolParity: boolean;
 }
 
 const DEFAULT_PROMPT = "The most surprising thing about local inference is";
@@ -48,11 +50,15 @@ function parseArgs(argv: string[]): CliOptions {
     fusedMlp: false,
     fusedRouting: false,
     residentLayers: false,
+    collectConfidence: false,
+    toolParity: false,
   };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     const next = argv[index + 1];
     if (argument === "--json") options.json = true;
+    else if (argument === "--confidence") options.collectConfidence = true;
+    else if (argument === "--tool-parity") options.toolParity = true;
     else if (argument === "--fused-attention") options.fusedAttention = true;
     else if (argument === "--fused-mlp") {
       options.fusedAttention = true;
@@ -108,6 +114,8 @@ Options:
   --fused-mlp                   Also fuse sandwich residuals and Hadamard MLP
   --fused-routing               Also fuse post-mHC routing and nextX lanes
   --resident-layers             Retain lanes and run full layers without readback
+  --confidence                  Probe CPU/GPU confidence pooling on the prompt
+  --tool-parity                 Run the constrained flashlight integration turn
   --json                        Print machine-readable JSON
 `);
 }
@@ -250,6 +258,8 @@ try {
     ...(cli.fusedMlp ? { fusedMlp: true } : {}),
     ...(cli.fusedRouting ? { fusedRouting: true } : {}),
     ...(cli.residentLayers ? { residentLayers: true } : {}),
+    ...(cli.collectConfidence ? { collectConfidence: true } : {}),
+    ...(cli.toolParity ? { toolParity: true } : {}),
   };
 
   process.stderr.write("running in WebView...\n");
@@ -279,6 +289,8 @@ const report = {
     fusedMlp: cli.fusedMlp,
     fusedRouting: cli.fusedRouting,
     residentLayers: cli.residentLayers,
+    collectConfidence: cli.collectConfidence,
+    toolParity: cli.toolParity,
   },
   results: page.results,
 };
@@ -292,6 +304,12 @@ if (cli.json) {
   console.log(`prompt tokens generated: ${cli.tokens}; warmup ${cli.warmup}; runs ${cli.runs}\n`);
   console.log(formatTable(page.results));
   for (const result of page.results) {
+    if (result.confidence !== undefined)
+      console.log(`${result.backend} confidence: ${result.confidence.toFixed(6)}`);
+    if (result.toolRawCall !== undefined)
+      console.log(
+        `${result.backend} tool call: ${result.toolRawCall} (confidence ${result.toolConfidence}, ${result.toolElapsedMs?.toFixed(0)} ms)`,
+      );
     if (result.error) console.log(`\n${result.backend}: ${result.error}`);
   }
 }

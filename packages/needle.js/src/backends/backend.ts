@@ -38,6 +38,11 @@ export interface FusedAttentionRequest {
   readonly phiResidual: Float32Array;
 }
 
+export interface ResidentTokenSelection {
+  readonly id: number;
+  readonly logProbability: number;
+}
+
 export interface ResidentLayerRequest {
   readonly layerIndex: number;
   readonly position: number;
@@ -52,6 +57,10 @@ export interface FusedAttentionSession {
   beginResidentToken?(lanes: Float32Array): Promise<boolean>;
   forwardResidentLayer?(request: ResidentLayerRequest): Promise<void>;
   finishResidentToken?(wantLogits: boolean): Promise<Float32Array | null>;
+  finishResidentTokenForSelection?(): Promise<void>;
+  selectResidentToken?(allowedTokenIds?: Uint32Array): Promise<ResidentTokenSelection>;
+  residentLayersEnabled?(): boolean;
+  residentConfidence?(): Promise<number | undefined>;
   readResidentLanes?(): Promise<Float32Array>;
   dispose(): void;
 }

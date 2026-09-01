@@ -114,7 +114,7 @@ The individual fusion options are experimental. Small-context WebGPU attention i
 
 1. global lane RMS and sixteen groupwise Hadamard preparations;
 2. selected mHC phi projections and h-pre lane reduction;
-3. optional engram injection and input RMSNorm;
+3. resident engram row gather/dequantization, key/value projection, convolution-ring update, injection, and input RMSNorm;
 4. resident attention/KV, output projection, sandwich residual, and MLP;
 5. h-post, Sinkhorn routing, and `nextX`, copied into the next layer's lane buffer.
 
@@ -122,7 +122,9 @@ By default each encoded layer is submitted immediately. This allows WebKit to ex
 
 After layer 27, final lane averaging, RMSNorm, activation preparation, and vocabulary projection remain on GPU. Non-logit prefill steps do not read layer/final state at all. Raw callers may read all 8,192 logits once; high-level tool calling builds an ascending list of grammar-allowed token IDs in JavaScript, uploads that list, and receives only the selected ID and full-vocabulary log probability.
 
-Confidence collection is also resident for the official eight-probe, one-output head. A GPU online pool consumes the replicated embedding and every layer's four-lane mean, then returns one sigmoid score. The flashlight integration produced the same constrained call on CPU and resident TypeGPU in 1,150 ms and 1,012 ms respectively, with final confidence 0.7526 vs 0.7563. Raw generation measured 51.4 tok/s on the standard workload and 5.40 tok/s at a 98-token prompt, ahead of CPU in both paired runs.
+JavaScript still computes the four n-gram hashes, but uploads only row IDs and validity flags. Both CQ engram tables, projected keys/values, and the dilated convolution ring remain GPU-resident.
+
+Confidence collection is also resident for the official eight-probe, one-output head. A GPU online pool consumes the replicated embedding and every layer's four-lane mean, then returns one sigmoid score. The flashlight integration produced the same constrained call on CPU and resident TypeGPU in 1,153 ms and 1,016 ms respectively, with final confidence 0.7526 vs 0.7481. Raw generation measured 52.0 tok/s on the standard workload and 5.40 tok/s at a 98-token prompt, ahead of CPU in both paired runs.
 
 ## Custom backend
 

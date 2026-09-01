@@ -22,6 +22,11 @@ import {
 const ENGRAM_SEED = 0x9e37_79b9;
 const ENGRAM_PRIME = 0x0100_0193;
 
+interface EngramLookup {
+  readonly indices: Uint32Array;
+  readonly valid: Uint32Array;
+}
+
 export interface RuntimeOptions {
   /** Int8 matches the published engine. Float32 is useful for reference diffs. */
   readonly kvCache?: "int8" | "float32";
@@ -306,7 +311,18 @@ export class NeedleRuntime {
 
     let x: Float32Array = new Float32Array(lanes * dimension);
     for (let lane = 0; lane < lanes; lane++) x.set(scaledEmbedding, lane * dimension);
-    const [engramKeys, engramValues] = await this.#engramStep();
+    const engramLookup = this.#engramLookup();
+    const residentEngrams =
+      engramLookup !== undefined && this.#fusedAttention?.prepareResidentEngrams
+        ? await this.#fusedAttention.prepareResidentEngrams({
+            ...engramLookup,
+            position: this.#engramPosition,
+          })
+        : false;
+    const [engramKeys, engramValues] = residentEngrams
+      ? [[], []]
+      : await this.#engramStep(engramLookup);
+    if (residentEngrams) this.#engramPosition++;
     const attentionWidth = geometry.numberOfHeads * geometry.headDimension;
     const residentLayers = (await this.#fusedAttention?.beginResidentToken?.(x)) ?? false;
     let residentLogits: Float32Array | null | undefined;
@@ -769,17 +785,18 @@ export class NeedleRuntime {
     return output;
   }
 
-  async #engramStep(): Promise<[Float32Array[], Float32Array[]]> {
+  #engramLookup(): EngramLookup | undefined {
     const geometry = this.weights.geometry;
-    if (geometry.engramLayers.length === 0) return [[], []];
+    if (geometry.engramLayers.length === 0) return undefined;
     const headsPerOrder = geometry.numberOfEngramTables / geometry.engramOrders.length;
     invariant(
       Number.isInteger(headsPerOrder),
       "INVALID_CACT",
       "Engram table count is not divisible by order count",
     );
-    const indices: number[] = [];
-    const valid: boolean[] = [];
+    const indices = new Uint32Array(geometry.numberOfEngramTables);
+    const valid = new Uint32Array(geometry.numberOfEngramTables);
+    let table = 0;
     for (let orderIndex = 0; orderIndex < geometry.engramOrders.length; orderIndex++) {
       const order = geometry.engramOrders[orderIndex] ?? 0;
       for (let head = 0; head < headsPerOrder; head++) {
@@ -792,11 +809,18 @@ export class NeedleRuntime {
           if (offset === order - 1) isValid = historyIndex >= 0;
         }
         hash = (hash ^ (hash >>> 15)) >>> 0;
-        indices.push(hash % geometry.engramSlots);
-        valid.push(isValid);
+        indices[table] = hash % geometry.engramSlots;
+        valid[table] = isValid ? 1 : 0;
+        table++;
       }
     }
+    return { indices, valid };
+  }
 
+  async #engramStep(lookup: EngramLookup | undefined): Promise<[Float32Array[], Float32Array[]]> {
+    const geometry = this.weights.geometry;
+    if (!lookup) return [[], []];
+    const { indices, valid } = lookup;
     const projectionRequests: MatvecRequest[] = [];
     for (let siteIndex = 0; siteIndex < this.weights.engrams.length; siteIndex++) {
       const site = this.weights.engrams[siteIndex];

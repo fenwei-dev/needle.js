@@ -61,7 +61,7 @@ For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok
 
 | Resident-layer workload | CPU | TypeGPU resident layers |
 | --- | ---: | ---: |
-| Standard prompt, 32 generated tokens | 41.6 tok/s | **51.4 tok/s** |
+| Standard prompt, 32 generated tokens | 41.3 tok/s | **52.0 tok/s** |
 | 98-token prompt, 8 generated tokens | 4.68 tok/s | **5.40 tok/s** |
 
 The resident path matched CPU greedy text in both workloads.
@@ -78,10 +78,14 @@ The resident confidence implementation maintains eight online probe pools from t
 
 | Backend | Raw call | Final confidence | Elapsed |
 | --- | --- | ---: | ---: |
-| CPU | `[{"name":"turn_on_flashlight","arguments":{}}]` | 0.7526 | 1,150 ms |
-| TypeGPU resident | same | 0.7563 | **1,012 ms** |
+| CPU | `[{"name":"turn_on_flashlight","arguments":{}}]` | 0.7526 | 1,153 ms |
+| TypeGPU resident | same | 0.7481 | **1,016 ms** |
 
-A prompt-only probe check differed by about `1.1e-9`; the final turn's small confidence difference includes accumulated f32 model/log-probability differences. Both paths selected the exact same schema-constrained token sequence.
+A prompt-only probe check differed by about `1.1e-9`; the final turn's small confidence difference includes accumulated f32 model, resident engram, and token-log-probability differences. Both paths selected the exact same schema-constrained token sequence.
+
+### Resident engrams
+
+The resident path now uploads four hashed row IDs rather than CPU-materialized engram keys and values. WebGPU gathers and dequantizes four 128-value W2 rows per site, performs key/value CQ projections, updates the dilated convolution ring, and injects the result at layers 2 and 15. Standard throughput increased from 51.4 to **52.0 tok/s** while preserving greedy text and the constrained flashlight call.
 
 ## Reproduce
 

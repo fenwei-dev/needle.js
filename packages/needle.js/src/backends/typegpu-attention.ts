@@ -7,6 +7,7 @@ import type {
   FusedAttentionResetOptions,
   FusedAttentionResult,
   FusedAttentionSession,
+  ResidentEngramRequest,
   ResidentLayerRequest,
   ResidentTokenRequest,
   ResidentTokenSelection,
@@ -17,6 +18,8 @@ import {
   ATTENTION_SOFTMAX_GATE_WGSL,
   CONFIDENCE_HEAD_WGSL,
   CONFIDENCE_POOL_WGSL,
+  ENGRAM_CONVOLVE_WGSL,
+  ENGRAM_GATHER_WGSL,
   ENGRAM_INJECT_WGSL,
   FINAL_NORM_WGSL,
   HADAMARD_MLP_DELTA_WGSL,
@@ -51,6 +54,15 @@ interface LayerNormBuffers {
   readonly d1: GPUBuffer;
   readonly d2: GPUBuffer;
   readonly d3: GPUBuffer;
+}
+
+interface ResidentEngramGroups {
+  readonly gather: GPUBindGroup;
+  readonly prepare: GPUBindGroup;
+  readonly key: GPUBindGroup;
+  readonly value: GPUBindGroup;
+  readonly convolve: GPUBindGroup;
+  readonly inject: GPUBindGroup;
 }
 
 interface ResidentLayerSlot {
@@ -88,6 +100,8 @@ interface Pipelines {
   readonly rmsLanes: GPUComputePipeline;
   readonly mhcPre: GPUComputePipeline;
   readonly engram: GPUComputePipeline;
+  readonly engramGather: GPUComputePipeline;
+  readonly engramConvolve: GPUComputePipeline;
   readonly norm512: GPUComputePipeline;
   readonly finalNorm: GPUComputePipeline;
   readonly confidencePool: GPUComputePipeline;
@@ -128,6 +142,17 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   readonly #hPreParams: GPUBuffer;
   readonly #engramKey: GPUBuffer;
   readonly #engramValue: GPUBuffer;
+  readonly #engramRowIds: GPUBuffer;
+  readonly #engramRowValid: GPUBuffer;
+  readonly #residentEngramConcatenated: GPUBuffer[];
+  readonly #residentEngramPrepared: GPUBuffer[];
+  readonly #residentEngramKeys: GPUBuffer[];
+  readonly #residentEngramValueNow: GPUBuffer[];
+  readonly #residentEngramMixed: GPUBuffer[];
+  readonly #residentEngramRing: GPUBuffer;
+  readonly #residentEngramRingValid: GPUBuffer;
+  readonly #residentEngramConvolutionParams: GPUBuffer[];
+  readonly #residentEngramProjectionParams: GPUBuffer[];
   readonly #nextLanes: GPUBuffer;
   readonly #finalNorm: GPUBuffer;
   readonly #finalHidden: GPUBuffer;
@@ -172,6 +197,9 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
   #prepareLanesGroup: GPUBindGroup | undefined;
   #mhcPreGroup: GPUBindGroup | undefined;
   #engramGroup: GPUBindGroup | undefined;
+  #residentEngramExtraBuffers: GPUBuffer[] = [];
+  #residentEngramGroups: ResidentEngramGroups[] = [];
+  #residentEngramReadyPosition = -1;
   #prepareInputGroup: GPUBindGroup | undefined;
   #finalNormGroup: GPUBindGroup | undefined;
   #prepareFinalGroup: GPUBindGroup | undefined;
@@ -272,6 +300,64 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       dimensionBytes,
       COPY_DST,
     );
+    this.#engramRowIds = storageBuffer(device, "needle.engram.row-ids", 4 * 4, COPY_DST);
+    this.#engramRowValid = storageBuffer(device, "needle.engram.row-valid", 4 * 4, COPY_DST);
+    this.#residentEngramConcatenated = [];
+    this.#residentEngramPrepared = [];
+    this.#residentEngramKeys = [];
+    this.#residentEngramValueNow = [];
+    this.#residentEngramMixed = [];
+    this.#residentEngramConvolutionParams = [];
+    this.#residentEngramProjectionParams = [];
+    const maximumOrder = Math.max(1, ...geometry.engramOrders);
+    const engramDepth = (geometry.engramConvolutionTaps - 1) * maximumOrder + 1;
+    this.#residentEngramRing = storageBuffer(
+      device,
+      "needle.engram.ring",
+      Math.max(4, geometry.engramLayers.length * engramDepth * dimensionBytes),
+      COPY_DST,
+    );
+    this.#residentEngramRingValid = storageBuffer(
+      device,
+      "needle.engram.ring-valid",
+      Math.max(4, geometry.engramLayers.length * engramDepth * 4),
+      COPY_DST,
+    );
+    for (let site = 0; site < weights.engrams.length; site++) {
+      const engram = weights.engrams[site];
+      invariant(engram, "INVALID_CACT", `Missing engram site ${site}`);
+      this.#residentEngramConcatenated.push(
+        storageBuffer(device, `needle.engram.${site}.concatenated`, dimensionBytes),
+      );
+      this.#residentEngramPrepared.push(
+        storageBuffer(device, `needle.engram.${site}.prepared`, dimensionBytes),
+      );
+      this.#residentEngramKeys.push(
+        storageBuffer(device, `needle.engram.${site}.key`, dimensionBytes),
+      );
+      this.#residentEngramValueNow.push(
+        storageBuffer(device, `needle.engram.${site}.value-now`, dimensionBytes),
+      );
+      this.#residentEngramMixed.push(
+        storageBuffer(device, `needle.engram.${site}.mixed`, dimensionBytes),
+      );
+      this.#residentEngramConvolutionParams.push(
+        storageBuffer(device, `needle.engram.${site}.convolution-params`, 16, COPY_DST),
+      );
+      const keyParams = bufferWithData(
+        device,
+        `needle.engram.${site}.key-params`,
+        matrixParameters(engram.keyProjection, 0, engram.keyProjection.outputSize),
+        STORAGE,
+      );
+      const valueParams = bufferWithData(
+        device,
+        `needle.engram.${site}.value-params`,
+        matrixParameters(engram.valueProjection, 0, engram.valueProjection.outputSize),
+        STORAGE,
+      );
+      this.#residentEngramProjectionParams.push(keyParams, valueParams);
+    }
     this.#nextLanes = storageBuffer(device, "needle.attention.next-lanes", lanesBytes, COPY_SRC);
     this.#finalNorm = bufferWithData(
       device,
@@ -398,6 +484,21 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
         bufferSource(new Float32Array(4096)),
       );
     }
+    if (this.#residentEnabled) {
+      this.#device.queue.writeBuffer(
+        this.#residentEngramRingValid,
+        0,
+        bufferSource(
+          new Uint32Array(
+            this.#weights.geometry.engramLayers.length *
+              ((this.#weights.geometry.engramConvolutionTaps - 1) *
+                Math.max(1, ...this.#weights.geometry.engramOrders) +
+                1),
+          ),
+        ),
+      );
+      this.#residentEngramReadyPosition = -1;
+    }
 
     this.#sinkLength = options.sinkLength;
     const allocation = Math.min(options.maximumLength, options.sinkLength + geometry.kvWindow);
@@ -452,6 +553,59 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       pass.end();
       this.#device.queue.submit([encoder.finish()]);
     }
+    return true;
+  }
+
+  async prepareResidentEngrams(request: ResidentEngramRequest): Promise<boolean> {
+    if (!this.#residentEnabled || this.#disposed || this.#weights.engrams.length === 0)
+      return false;
+    invariant(
+      request.indices.length === 4 && request.valid.length === 4,
+      "INVALID_CACT",
+      "Resident engram lookup requires four row IDs and validity flags",
+    );
+    this.#device.queue.writeBuffer(this.#engramRowIds, 0, bufferSource(request.indices));
+    this.#device.queue.writeBuffer(this.#engramRowValid, 0, bufferSource(request.valid));
+    const pipelines = await this.#pipelines;
+    const groups = this.#ensureResidentEngramGroups(pipelines);
+    const geometry = this.#weights.geometry;
+    const maximumOrder = Math.max(1, ...geometry.engramOrders);
+    const depth = (geometry.engramConvolutionTaps - 1) * maximumOrder + 1;
+    const encoder = this.#device.createCommandEncoder({ label: "needle.engram.resident" });
+    for (let site = 0; site < groups.length; site++) {
+      const group = groups[site];
+      const params = this.#residentEngramConvolutionParams[site];
+      invariant(group && params, "INVALID_CACT", `Missing resident engram group ${site}`);
+      this.#device.queue.writeBuffer(
+        params,
+        0,
+        bufferSource(new Uint32Array([site, request.position, depth, maximumOrder])),
+      );
+      const gather = encoder.beginComputePass({ label: `needle.engram.${site}.gather` });
+      gather.setPipeline(pipelines.engramGather);
+      gather.setBindGroup(0, group.gather);
+      gather.dispatchWorkgroups(4);
+      gather.end();
+      const prepare = encoder.beginComputePass({ label: `needle.engram.${site}.prepare` });
+      prepare.setPipeline(pipelines.prepare);
+      prepare.setBindGroup(0, group.prepare);
+      prepare.dispatchWorkgroups(4);
+      prepare.end();
+      const projections = encoder.beginComputePass({ label: `needle.engram.${site}.project` });
+      projections.setPipeline(pipelines.cq);
+      projections.setBindGroup(0, group.key);
+      projections.dispatchWorkgroups(512);
+      projections.setBindGroup(0, group.value);
+      projections.dispatchWorkgroups(512);
+      projections.end();
+      const convolve = encoder.beginComputePass({ label: `needle.engram.${site}.convolve` });
+      convolve.setPipeline(pipelines.engramConvolve);
+      convolve.setBindGroup(0, group.convolve);
+      convolve.dispatchWorkgroups(1);
+      convolve.end();
+    }
+    this.#device.queue.submit([encoder.finish()]);
+    this.#residentEngramReadyPosition = request.position;
     return true;
   }
 
@@ -608,6 +762,11 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       this.#device.queue.writeBuffer(this.#engramKey, 0, bufferSource(engramKey));
       this.#device.queue.writeBuffer(this.#engramValue, 0, bufferSource(engramValue));
     }
+    const engramSite = this.#weights.geometry.engramLayers.indexOf(layerIndex);
+    const residentEngramGroup =
+      this.#residentEngramReadyPosition === position && engramSite >= 0
+        ? this.#residentEngramGroups[engramSite]?.inject
+        : undefined;
     this.#writeAttentionParams(layer, layerIndex, position);
 
     const encoder = this.#device.createCommandEncoder({ label: "needle.resident-layer.encoder" });
@@ -648,10 +807,10 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
     prePass.dispatchWorkgroups(1);
     prePass.end();
 
-    if (engramKey && engramValue) {
+    if ((engramKey && engramValue) || residentEngramGroup) {
       const engramPass = encoder.beginComputePass({ label: "needle.resident-layer.engram" });
       engramPass.setPipeline(pipelines.engram);
-      engramPass.setBindGroup(0, this.#getEngramGroup(pipelines.engram));
+      engramPass.setBindGroup(0, residentEngramGroup ?? this.#getEngramGroup(pipelines.engram));
       engramPass.dispatchWorkgroups(1);
       engramPass.end();
     } else {
@@ -1044,6 +1203,18 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       this.#hPreParams,
       this.#engramKey,
       this.#engramValue,
+      this.#engramRowIds,
+      this.#engramRowValid,
+      this.#residentEngramRing,
+      this.#residentEngramRingValid,
+      ...this.#residentEngramConcatenated,
+      ...this.#residentEngramPrepared,
+      ...this.#residentEngramKeys,
+      ...this.#residentEngramValueNow,
+      ...this.#residentEngramMixed,
+      ...this.#residentEngramConvolutionParams,
+      ...this.#residentEngramProjectionParams,
+      ...this.#residentEngramExtraBuffers,
       this.#nextLanes,
       this.#finalNorm,
       this.#finalHidden,
@@ -1087,6 +1258,96 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       norms.d2.destroy();
       norms.d3.destroy();
     }
+  }
+
+  #ensureResidentEngramGroups(pipelines: Pipelines): readonly ResidentEngramGroups[] {
+    if (this.#residentEngramGroups.length === this.#weights.engrams.length) {
+      return this.#residentEngramGroups;
+    }
+    for (const buffer of this.#residentEngramExtraBuffers) buffer.destroy();
+    this.#residentEngramExtraBuffers = [];
+    this.#residentEngramGroups = [];
+    for (let site = 0; site < this.#weights.engrams.length; site++) {
+      const engram = this.#weights.engrams[site];
+      const concatenated = this.#residentEngramConcatenated[site];
+      const prepared = this.#residentEngramPrepared[site];
+      const keyOutput = this.#residentEngramKeys[site];
+      const valueOutput = this.#residentEngramValueNow[site];
+      const mixed = this.#residentEngramMixed[site];
+      const convolutionParams = this.#residentEngramConvolutionParams[site];
+      const keyParams = this.#residentEngramProjectionParams[site * 2];
+      const valueParams = this.#residentEngramProjectionParams[site * 2 + 1];
+      invariant(
+        engram &&
+          concatenated &&
+          prepared &&
+          keyOutput &&
+          valueOutput &&
+          mixed &&
+          convolutionParams &&
+          keyParams &&
+          valueParams,
+        "INVALID_CACT",
+        `Missing resident engram resources ${site}`,
+      );
+      const table = this.#gpuMatrix(engram.tables);
+      const gather = this.#device.createBindGroup({
+        layout: pipelines.engramGather.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: table.packed } },
+          { binding: 1, resource: { buffer: table.norms } },
+          { binding: 2, resource: { buffer: this.#codebook } },
+          { binding: 3, resource: { buffer: this.#engramRowIds } },
+          { binding: 4, resource: { buffer: this.#engramRowValid } },
+          { binding: 5, resource: { buffer: concatenated } },
+        ],
+      });
+      const prepare = this.#device.createBindGroup({
+        layout: pipelines.prepare.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: concatenated } },
+          { binding: 1, resource: { buffer: prepared } },
+        ],
+      });
+      const key = this.#createProjectionGroup(
+        engram.keyProjection,
+        prepared,
+        keyParams,
+        keyOutput,
+        pipelines.cq,
+      );
+      const value = this.#createProjectionGroup(
+        engram.valueProjection,
+        prepared,
+        valueParams,
+        valueOutput,
+        pipelines.cq,
+      );
+      const taps = bufferWithData(this.#device, `needle.engram.${site}.taps`, engram.taps, STORAGE);
+      this.#residentEngramExtraBuffers.push(taps);
+      const convolve = this.#device.createBindGroup({
+        layout: pipelines.engramConvolve.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: valueOutput } },
+          { binding: 1, resource: { buffer: this.#residentEngramRing } },
+          { binding: 2, resource: { buffer: taps } },
+          { binding: 3, resource: { buffer: this.#residentEngramRingValid } },
+          { binding: 4, resource: { buffer: convolutionParams } },
+          { binding: 5, resource: { buffer: mixed } },
+        ],
+      });
+      const inject = this.#device.createBindGroup({
+        layout: pipelines.engram.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#updateInput } },
+          { binding: 1, resource: { buffer: keyOutput } },
+          { binding: 2, resource: { buffer: mixed } },
+          { binding: 3, resource: { buffer: this.#blockInput } },
+        ],
+      });
+      this.#residentEngramGroups.push({ gather, prepare, key, value, convolve, inject });
+    }
+    return this.#residentEngramGroups;
   }
 
   #ensureResidentSlots(pipelines: Pipelines): readonly ResidentLayerSlot[] {
@@ -1304,18 +1565,24 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
       let engramKey: GPUBuffer | undefined;
       let engramValue: GPUBuffer | undefined;
       let engramGroup: GPUBindGroup | undefined;
-      if (geometry.engramLayers.includes(layerIndex)) {
-        engramKey = makeDynamic(`needle.resident.${layerIndex}.engram-key`, 512 * 4);
-        engramValue = makeDynamic(`needle.resident.${layerIndex}.engram-value`, 512 * 4);
-        engramGroup = this.#device.createBindGroup({
-          layout: pipelines.engram.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: { buffer: this.#updateInput } },
-            { binding: 1, resource: { buffer: engramKey } },
-            { binding: 2, resource: { buffer: engramValue } },
-            { binding: 3, resource: { buffer: this.#blockInput } },
-          ],
-        });
+      const engramSite = geometry.engramLayers.indexOf(layerIndex);
+      if (engramSite >= 0) {
+        const residentEngram = this.#residentEngramGroups[engramSite];
+        if (residentEngram) {
+          engramGroup = residentEngram.inject;
+        } else {
+          engramKey = makeDynamic(`needle.resident.${layerIndex}.engram-key`, 512 * 4);
+          engramValue = makeDynamic(`needle.resident.${layerIndex}.engram-value`, 512 * 4);
+          engramGroup = this.#device.createBindGroup({
+            layout: pipelines.engram.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: { buffer: this.#updateInput } },
+              { binding: 1, resource: { buffer: engramKey } },
+              { binding: 2, resource: { buffer: engramValue } },
+              { binding: 3, resource: { buffer: this.#blockInput } },
+            ],
+          });
+        }
       }
       this.#residentSlots.push({
         layer,
@@ -1334,7 +1601,12 @@ export class TypeGPUFusedAttentionSession implements FusedAttentionSession {
         sandwichGroup,
         mlpGroup,
         routingGroup,
-        ...(engramKey && engramValue && engramGroup ? { engramKey, engramValue, engramGroup } : {}),
+        ...(engramGroup
+          ? {
+              engramGroup,
+              ...(engramKey && engramValue ? { engramKey, engramValue } : {}),
+            }
+          : {}),
       });
     }
     return this.#residentSlots;
@@ -2078,6 +2350,8 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     ["rms-lanes", RMS_LANES_WGSL, "rms_lanes"],
     ["mhc-pre", MHC_PRE_WGSL, "mhc_pre"],
     ["engram", ENGRAM_INJECT_WGSL, "engram_inject"],
+    ["engram-gather", ENGRAM_GATHER_WGSL, "engram_gather"],
+    ["engram-convolve", ENGRAM_CONVOLVE_WGSL, "engram_convolve"],
     ["norm-512", RMS_NORM_512_WGSL, "rms_norm_512"],
     ["final-norm", FINAL_NORM_WGSL, "final_norm"],
     ["confidence-pool", CONFIDENCE_POOL_WGSL, "confidence_pool"],
@@ -2113,6 +2387,8 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     rmsLanes,
     mhcPre,
     engram,
+    engramGather,
+    engramConvolve,
     norm512,
     finalNorm,
     confidencePool,
@@ -2132,6 +2408,8 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
       rmsLanes &&
       mhcPre &&
       engram &&
+      engramGather &&
+      engramConvolve &&
       norm512 &&
       finalNorm &&
       confidencePool &&
@@ -2153,6 +2431,8 @@ async function createPipelines(device: GPUDevice): Promise<Pipelines> {
     rmsLanes,
     mhcPre,
     engram,
+    engramGather,
+    engramConvolve,
     norm512,
     finalNorm,
     confidencePool,

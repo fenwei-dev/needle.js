@@ -131,6 +131,88 @@ fn rms_norm_512(@builtin(local_invocation_id) local: vec3u) {
 }
 `;
 
+export const ENGRAM_GATHER_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> packed: array<u32>;
+@group(0) @binding(1) var<storage, read> norms: array<f32>;
+@group(0) @binding(2) var<storage, read> codebook: array<f32>;
+@group(0) @binding(3) var<storage, read> row_ids: array<u32>;
+@group(0) @binding(4) var<storage, read> row_valid: array<u32>;
+@group(0) @binding(5) var<storage, read_write> output: array<f32>;
+
+var<workgroup> row_values: array<f32, 128>;
+
+@compute @workgroup_size(128)
+fn engram_gather(
+  @builtin(workgroup_id) group: vec3u,
+  @builtin(local_invocation_id) local: vec3u,
+) {
+  let table = group.x;
+  if (row_valid[table] == 0u) {
+    output[table * 128u + local.x] = 0.0;
+    return;
+  }
+  let row = table * 8192u + row_ids[table];
+  let bit_position = row * 256u + local.x * 2u;
+  let word = packed[bit_position >> 5u];
+  let index = (word >> (bit_position & 31u)) & 3u;
+  row_values[local.x] = codebook[index] * norms[row];
+  workgroupBarrier();
+  for (var stride = 1u; stride < 128u; stride <<= 1u) {
+    if (local.x < 64u) {
+      let block = (local.x / stride) * (stride * 2u);
+      let inner = local.x % stride;
+      let left_index = block + inner;
+      let right_index = left_index + stride;
+      let left = row_values[left_index];
+      let right = row_values[right_index];
+      row_values[left_index] = left + right;
+      row_values[right_index] = left - right;
+    }
+    workgroupBarrier();
+  }
+  output[table * 128u + local.x] = row_values[local.x] * 0.08838834764831845;
+}
+`;
+
+export const ENGRAM_CONVOLVE_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> value_now: array<f32>;
+@group(0) @binding(1) var<storage, read_write> ring: array<f32>;
+@group(0) @binding(2) var<storage, read> taps: array<f32>;
+@group(0) @binding(3) var<storage, read_write> ring_valid: array<u32>;
+@group(0) @binding(4) var<storage, read> params: array<u32>;
+@group(0) @binding(5) var<storage, read_write> mixed: array<f32>;
+
+@compute @workgroup_size(128)
+fn engram_convolve(@builtin(local_invocation_id) local: vec3u) {
+  let site = params[0];
+  let position = params[1];
+  let depth = params[2];
+  let maximum_order = params[3];
+  let slot = position % depth;
+  let valid_index = site * depth + slot;
+  let ring_offset = valid_index * 512u;
+  for (var index = local.x; index < 512u; index += 128u) {
+    ring[ring_offset + index] = value_now[index];
+  }
+  if (local.x == 0u) { ring_valid[valid_index] = 1u; }
+  workgroupBarrier();
+  for (var index = local.x; index < 512u; index += 128u) {
+    var value = 0.0;
+    for (var tap = 0u; tap < 4u; tap++) {
+      let distance = tap * maximum_order;
+      if (position < distance) { continue; }
+      let previous_position = position - distance;
+      let previous_slot = previous_position % depth;
+      let previous_valid = site * depth + previous_slot;
+      if (ring_valid[previous_valid] == 0u) { continue; }
+      let previous_offset = previous_valid * 512u;
+      value = value + taps[tap * 512u + index] * ring[previous_offset + index];
+    }
+    mixed[index] = value;
+  }
+}
+`;
+
 export const FINAL_NORM_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read> lanes: array<f32>;
 @group(0) @binding(1) var<storage, read> scale: array<f32>;

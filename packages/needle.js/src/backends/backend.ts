@@ -43,6 +43,12 @@ export interface ResidentTokenSelection {
   readonly logProbability: number;
 }
 
+export interface ResidentEngramRequest {
+  readonly indices: Uint32Array;
+  readonly valid: Uint32Array;
+  readonly position: number;
+}
+
 export interface ResidentTokenRequest {
   readonly position: number;
   readonly engramKeys: readonly Float32Array[];
@@ -61,6 +67,7 @@ export interface FusedAttentionSession {
   reset(options: FusedAttentionResetOptions): boolean;
   forward(request: FusedAttentionRequest): Promise<FusedAttentionResult>;
   beginResidentToken?(lanes: Float32Array): Promise<boolean>;
+  prepareResidentEngrams?(request: ResidentEngramRequest): Promise<boolean>;
   forwardResidentToken?(request: ResidentTokenRequest): Promise<void>;
   forwardResidentLayer?(request: ResidentLayerRequest): Promise<void>;
   finishResidentToken?(wantLogits: boolean): Promise<Float32Array | null>;

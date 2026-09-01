@@ -7,6 +7,7 @@ export type {
   InferenceBackend,
   MatrixRowRange,
   MatvecRequest,
+  ResidentEngramRequest,
   ResidentLayerRequest,
   ResidentTokenRequest,
   ResidentTokenSelection,

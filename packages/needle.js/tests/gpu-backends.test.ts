@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { init } from "vgpu/mock";
 import { TypeGPUBackend } from "../src/backends/typegpu.js";
 import { VGPUBackend } from "../src/backends/vgpu.js";
+import { batchMatrixParameters, webGpuBatchMatrixData } from "../src/backends/webgpu-kernel.js";
 import type { CactWeights, CqMatrix } from "../src/model/cact.js";
 
 function fixture(): { weights: CactWeights; matrix: CqMatrix } {
@@ -43,6 +44,32 @@ function fixture(): { weights: CactWeights; matrix: CqMatrix } {
 }
 
 describe("optional GPU backends", () => {
+  test("packs multiple matrices and their dispatch metadata into one arena", () => {
+    const { matrix } = fixture();
+    const data = webGpuBatchMatrixData([matrix, matrix]);
+    expect(data.packedWords).toHaveLength(2);
+    expect(data.norms).toHaveLength(2);
+    expect(data.entries).toEqual([
+      { packedWordOffset: 0, normOffset: 0 },
+      { packedWordOffset: 1, normOffset: 1 },
+    ]);
+    const entry = data.entries[0];
+    if (!entry) throw new Error("Missing packed matrix entry");
+    const parameters = batchMatrixParameters([
+      {
+        matrix,
+        rowStart: 0,
+        rowCount: 1,
+        outputStart: 0,
+        inputOffset: 0,
+        ...entry,
+      },
+    ]);
+    expect(parameters[0]).toBe(1);
+    expect(parameters[1]).toBe(0);
+    expect(parameters[2]).toBe(1);
+    expect(parameters[9]).toBe(0);
+  });
   test("TypeGPU initializes, resolves WGSL, dispatches, and reads back", async () => {
     const mock = await init();
     const { weights, matrix } = fixture();

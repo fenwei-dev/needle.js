@@ -85,7 +85,7 @@ In a browser with WebGPU, `auto` tries TypeGPU and then vgpu. Otherwise it uses 
 
 ## Hybrid GPU execution
 
-The GPU backends accelerate packed CQ matrix–vector operators. Independent mHC projections, Q/K/V/gate projections, and engram key/value projections use `matvecBatch()` so each group has one host synchronization. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent groups.
+The GPU backends accelerate packed CQ matrix–vector operators. Independent mHC projections, Q/K/V/gate projections, and engram key/value projections use `matvecBatch()`. Their packed weights and norms are combined into a cached arena, and one dispatch writes a contiguous result, so each group has one queue submission and one host synchronization. Small recurrent operations, attention bookkeeping, grammar state, and sampling remain in TypeScript, with readback between dependent groups.
 
 A matvec with only 4–512 output rows is too small to amortize submission and synchronous readback in this architecture. Both backends therefore default `minimumGpuRows` to `1024`; smaller projections use the optimized TypeScript CQ kernel and the official model's 8,192-row vocabulary projection uses WebGPU. Set `minimumGpuRows: 0` to force every CQ matvec onto the GPU for diagnostics.
 

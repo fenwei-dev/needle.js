@@ -186,7 +186,7 @@ Greedy generation of 32 tokens in Bun.WebView (WKWebView + WebGPU, macOS arm64, 
 | TypeGPU | **50.8** | 630 |
 | vgpu | 50.5 | 634 |
 
-The WebGPU shader reduces each CQ row across a 32-lane workgroup. Independent mHC, Q/K/V/gate, and engram projections are submitted as batches with one host synchronization per group. By default, projections below 1,024 output rows still stay on CPU because their readback cost exceeds their compute time; for the official model, WebGPU therefore handles the 8,192-row vocabulary projection. Forcing every matvec onto WebGPU now measures 20.9 tok/s with TypeGPU and 19.4 tok/s with vgpu, up from 6.68 and 11.33 tok/s before batching. Reproduce with:
+The WebGPU shader reduces each CQ row across a 32-lane workgroup. Independent mHC, Q/K/V/gate, and engram projections are packed into one matrix arena and executed with one dispatch and one host synchronization per group. By default, projections below 1,024 output rows still stay on CPU because their readback cost exceeds their compute time; for the official model, WebGPU therefore handles the 8,192-row vocabulary projection. Forcing every matvec onto WebGPU now measures 21.0 tok/s with TypeGPU and 23.3 tok/s with vgpu, up from 6.68 and 11.33 tok/s before batching. Reproduce with:
 
 ```bash
 bun run bench

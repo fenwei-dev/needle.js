@@ -10,9 +10,11 @@ import {
   prepareCqActivationCached,
 } from "./cq.js";
 import {
+  batchMatrixParameters,
   CQ_MATVEC_WGSL,
   matrixParameters,
   normalizeMinimumGpuRows,
+  webGpuBatchMatrixData,
   webGpuMatrixData,
 } from "./webgpu-kernel.js";
 
@@ -20,10 +22,16 @@ const MAP_READ = 0x0001;
 const COPY_SRC = 0x0004;
 const COPY_DST = 0x0008;
 const STORAGE = 0x0080;
+const MAX_BATCH_JOBS = 4;
 
 interface GpuMatrix {
   readonly packed: GPUBuffer;
   readonly norms: GPUBuffer;
+}
+
+interface GpuBatchMatrix extends GpuMatrix {
+  readonly entries: readonly { readonly packedWordOffset: number; readonly normOffset: number }[];
+  readonly key: string;
 }
 
 interface GpuSlot {
@@ -31,14 +39,16 @@ interface GpuSlot {
   readonly output: GPUBuffer;
   readonly parameters: GPUBuffer;
   readonly bindGroups: WeakMap<CqMatrix, GPUBindGroup>;
+  readonly batchBindGroups: Map<string, GPUBindGroup>;
 }
 
 interface BatchJob {
   readonly index: number;
+  readonly matrix: CqMatrix;
+  readonly prepared: Float32Array;
+  readonly rowStart: number;
   readonly rowCount: number;
-  readonly stagingOffset: number;
-  readonly slot: GpuSlot;
-  readonly matrix: GpuMatrix;
+  readonly outputStart: number;
 }
 
 export interface TypeGPUBackendOptions {
@@ -64,14 +74,19 @@ export class TypeGPUBackend implements InferenceBackend {
 
   readonly #ownsRoot: boolean;
   readonly #pipeline: GPUComputePipeline;
+  readonly #shaderModule: GPUShaderModule;
   readonly #codebook: GPUBuffer;
   readonly #staging: GPUBuffer;
   readonly #maximumInputBytes: number;
   readonly #maximumOutputBytes: number;
   readonly #slots: GpuSlot[] = [];
   readonly #matrixCache = new WeakMap<CqMatrix, GpuMatrix>();
+  readonly #batchMatrixCache = new Map<string, GpuBatchMatrix>();
   readonly #allocatedMatrices: GpuMatrix[] = [];
+  readonly #allocatedBatchMatrices: GpuBatchMatrix[] = [];
   readonly #minimumGpuRows: number;
+  #batchPipeline: GPUComputePipeline | undefined;
+  #batchPipelinePromise: Promise<GPUComputePipeline> | undefined;
   #disposed = false;
 
   private constructor(
@@ -79,18 +94,20 @@ export class TypeGPUBackend implements InferenceBackend {
     root: TgpuRoot,
     ownsRoot: boolean,
     pipeline: GPUComputePipeline,
+    shaderModule: GPUShaderModule,
     minimumGpuRows: number,
   ) {
     this.root = root;
     this.device = root.device;
     this.#ownsRoot = ownsRoot;
     this.#pipeline = pipeline;
+    this.#shaderModule = shaderModule;
     this.#minimumGpuRows = minimumGpuRows;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
-    this.#maximumInputBytes = align4(maximumInput * 4);
-    this.#maximumOutputBytes = align4(maximumOutput * 4);
+    this.#maximumInputBytes = align4(maximumInput * 4 * MAX_BATCH_JOBS);
+    this.#maximumOutputBytes = align4(maximumOutput * 4 * MAX_BATCH_JOBS);
     this.#codebook = bufferWithData(
       this.device,
       "needle.typegpu.codebook",
@@ -139,6 +156,7 @@ export class TypeGPUBackend implements InferenceBackend {
         root,
         ownsRoot,
         pipeline,
+        module,
         normalizeMinimumGpuRows(options.minimumGpuRows),
       );
     } catch (cause) {
@@ -197,7 +215,7 @@ export class TypeGPUBackend implements InferenceBackend {
     const results = new Array<Float32Array>(requests.length);
     const preparedCache = new Map<Float32Array, Map<string, Float32Array>>();
     const jobs: BatchJob[] = [];
-    let stagingBytes = 0;
+    let outputCount = 0;
 
     for (let index = 0; index < requests.length; index++) {
       const request = requests[index];
@@ -220,74 +238,72 @@ export class TypeGPUBackend implements InferenceBackend {
         results[index] = cqMatvecPrepared(matrix, prepared, rowStart, rowCount);
         continue;
       }
-
-      const slot = this.#slot(jobs.length);
-      this.device.queue.writeBuffer(slot.input, 0, bufferSource(prepared));
-      this.device.queue.writeBuffer(
-        slot.parameters,
-        0,
-        bufferSource(matrixParameters(matrix, rowStart, rowCount)),
-      );
-      jobs.push({
-        index,
-        rowCount,
-        stagingOffset: stagingBytes,
-        slot,
-        matrix: this.#gpuMatrix(matrix),
-      });
-      stagingBytes += align4(rowCount * 4);
+      jobs.push({ index, matrix, prepared, rowStart, rowCount, outputStart: outputCount });
+      outputCount += rowCount;
     }
 
     if (jobs.length === 0) return results;
-    const temporaryStaging = stagingBytes > this.#maximumOutputBytes;
-    const staging = temporaryStaging
-      ? this.device.createBuffer({
-          label: "needle.typegpu.batch-readback",
-          size: stagingBytes,
-          usage: MAP_READ | COPY_DST,
-        })
-      : this.#staging;
-
-    try {
-      const encoder = this.device.createCommandEncoder({
-        label: "needle.typegpu.cq-matvec-batch.encoder",
-      });
-      const pass = encoder.beginComputePass({
-        label: "needle.typegpu.cq-matvec-batch.pass",
-      });
-      pass.setPipeline(this.#pipeline);
-      for (const job of jobs) {
-        const request = requests[job.index];
-        invariant(request, "INVALID_CACT", `Missing TypeGPU batch request ${job.index}`);
-        pass.setBindGroup(0, this.#bindGroup(request.matrix, job.matrix, job.slot));
-        pass.dispatchWorkgroups(job.rowCount);
+    const inputOffsets = new Map<Float32Array, number>();
+    let inputCount = 0;
+    for (const job of jobs) {
+      if (!inputOffsets.has(job.prepared)) {
+        inputOffsets.set(job.prepared, inputCount);
+        inputCount += job.prepared.length;
       }
-      pass.end();
-      for (const job of jobs) {
-        encoder.copyBufferToBuffer(
-          job.slot.output,
-          0,
-          staging,
-          job.stagingOffset,
-          align4(job.rowCount * 4),
-        );
-      }
-      this.device.queue.submit([encoder.finish()]);
-      await staging.mapAsync(MAP_READ, 0, stagingBytes);
-      try {
-        const mapped = staging.getMappedRange(0, stagingBytes);
-        for (const job of jobs) {
-          const result = new Float32Array(job.rowCount);
-          result.set(new Float32Array(mapped, job.stagingOffset, job.rowCount));
-          results[job.index] = result;
-        }
-      } finally {
-        staging.unmap();
-      }
-      return results;
-    } finally {
-      if (temporaryStaging) staging.destroy();
     }
+    invariant(
+      inputCount * 4 <= this.#maximumInputBytes && outputCount * 4 <= this.#maximumOutputBytes,
+      "BACKEND_UNAVAILABLE",
+      "TypeGPU matvec batch exceeds its input or output arena",
+    );
+
+    const batchInput = new Float32Array(inputCount);
+    for (const [prepared, offset] of inputOffsets) batchInput.set(prepared, offset);
+    const batchMatrix = this.#gpuBatchMatrix(jobs.map((job) => job.matrix));
+    const parameters = batchMatrixParameters(
+      jobs.map((job, index) => {
+        const entry = batchMatrix.entries[index];
+        const inputOffset = inputOffsets.get(job.prepared);
+        invariant(entry && inputOffset !== undefined, "BACKEND_UNAVAILABLE", "Invalid GPU batch");
+        return {
+          matrix: job.matrix,
+          rowStart: job.rowStart,
+          rowCount: job.rowCount,
+          outputStart: job.outputStart,
+          inputOffset,
+          packedWordOffset: entry.packedWordOffset,
+          normOffset: entry.normOffset,
+        };
+      }),
+    );
+    const slot = this.#slot(0);
+    invariant(parameters.byteLength <= 16_384, "BACKEND_UNAVAILABLE", "GPU batch is too large");
+    this.device.queue.writeBuffer(slot.input, 0, bufferSource(batchInput));
+    this.device.queue.writeBuffer(slot.parameters, 0, bufferSource(parameters));
+
+    const batchPipeline = await this.#getBatchPipeline();
+    const encoder = this.device.createCommandEncoder({
+      label: "needle.typegpu.cq-matvec-batch.encoder",
+    });
+    const pass = encoder.beginComputePass({ label: "needle.typegpu.cq-matvec-batch.pass" });
+    pass.setPipeline(batchPipeline);
+    pass.setBindGroup(0, this.#batchBindGroup(batchMatrix, slot, batchPipeline));
+    pass.dispatchWorkgroups(outputCount);
+    pass.end();
+    encoder.copyBufferToBuffer(slot.output, 0, this.#staging, 0, outputCount * 4);
+    this.device.queue.submit([encoder.finish()]);
+    await this.#staging.mapAsync(MAP_READ, 0, outputCount * 4);
+    try {
+      const mapped = this.#staging.getMappedRange(0, outputCount * 4);
+      for (const job of jobs) {
+        const result = new Float32Array(job.rowCount);
+        result.set(new Float32Array(mapped, job.outputStart * 4, job.rowCount));
+        results[job.index] = result;
+      }
+    } finally {
+      this.#staging.unmap();
+    }
+    return results;
   }
 
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {
@@ -304,7 +320,7 @@ export class TypeGPUBackend implements InferenceBackend {
     }
     this.#codebook.destroy();
     this.#staging.destroy();
-    for (const matrix of this.#allocatedMatrices) {
+    for (const matrix of [...this.#allocatedMatrices, ...this.#allocatedBatchMatrices]) {
       matrix.packed.destroy();
       matrix.norms.destroy();
     }
@@ -333,6 +349,32 @@ export class TypeGPUBackend implements InferenceBackend {
     return result;
   }
 
+  #gpuBatchMatrix(matrices: readonly CqMatrix[]): GpuBatchMatrix {
+    const key = matrices.map((matrix) => matrix.record.index).join(":");
+    const cached = this.#batchMatrixCache.get(key);
+    if (cached) return cached;
+    const data = webGpuBatchMatrixData(matrices);
+    const result: GpuBatchMatrix = {
+      key,
+      entries: data.entries,
+      packed: bufferWithData(
+        this.device,
+        `needle.typegpu.batch.${key}.packed`,
+        data.packedWords,
+        STORAGE | COPY_DST,
+      ),
+      norms: bufferWithData(
+        this.device,
+        `needle.typegpu.batch.${key}.norms`,
+        data.norms,
+        STORAGE | COPY_DST,
+      ),
+    };
+    this.#batchMatrixCache.set(key, result);
+    this.#allocatedBatchMatrices.push(result);
+    return result;
+  }
+
   #slot(index: number): GpuSlot {
     let slot = this.#slots[index];
     if (!slot) {
@@ -356,11 +398,51 @@ export class TypeGPUBackend implements InferenceBackend {
       }),
       parameters: this.device.createBuffer({
         label: `needle.typegpu.parameters.${index}`,
-        size: 32,
+        size: 16_384,
         usage: STORAGE | COPY_DST,
       }),
       bindGroups: new WeakMap(),
+      batchBindGroups: new Map(),
     };
+  }
+
+  async #getBatchPipeline(): Promise<GPUComputePipeline> {
+    if (this.#batchPipeline) return this.#batchPipeline;
+    if (!this.#batchPipelinePromise) {
+      const descriptor: GPUComputePipelineDescriptor = {
+        label: "needle.typegpu.cq-matvec-batch.pipeline",
+        layout: "auto",
+        compute: { module: this.#shaderModule, entryPoint: "batch_main" },
+      };
+      this.#batchPipelinePromise = this.device.createComputePipelineAsync
+        ? this.device.createComputePipelineAsync(descriptor)
+        : Promise.resolve(this.device.createComputePipeline(descriptor));
+    }
+    this.#batchPipeline = await this.#batchPipelinePromise;
+    return this.#batchPipeline;
+  }
+
+  #batchBindGroup(
+    matrix: GpuBatchMatrix,
+    slot: GpuSlot,
+    pipeline: GPUComputePipeline,
+  ): GPUBindGroup {
+    const cached = slot.batchBindGroups.get(matrix.key);
+    if (cached) return cached;
+    const bindGroup = this.device.createBindGroup({
+      label: `needle.typegpu.batch.${matrix.key}.bind-group`,
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: matrix.packed } },
+        { binding: 1, resource: { buffer: matrix.norms } },
+        { binding: 2, resource: { buffer: slot.input } },
+        { binding: 3, resource: { buffer: this.#codebook } },
+        { binding: 4, resource: { buffer: slot.parameters } },
+        { binding: 5, resource: { buffer: slot.output } },
+      ],
+    });
+    slot.batchBindGroups.set(matrix.key, bindGroup);
+    return bindGroup;
   }
 
   #bindGroup(matrix: CqMatrix, gpuMatrix: GpuMatrix, slot: GpuSlot): GPUBindGroup {

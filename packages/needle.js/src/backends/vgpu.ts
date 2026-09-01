@@ -10,11 +10,15 @@ import {
   prepareCqActivationCached,
 } from "./cq.js";
 import {
+  batchMatrixParameters,
   CQ_MATVEC_WGSL,
   matrixParameters,
   normalizeMinimumGpuRows,
+  webGpuBatchMatrixData,
   webGpuMatrixData,
 } from "./webgpu-kernel.js";
+
+const MAX_BATCH_JOBS = 4;
 
 interface VgpuModule {
   readonly init: (options?: unknown) => Promise<Gpu>;
@@ -28,10 +32,8 @@ interface VgpuMatrix {
   readonly norms: StorageBuffer;
 }
 
-interface BatchRead {
-  readonly index: number;
-  readonly rowCount: number;
-  readonly bytes: Promise<ArrayBuffer>;
+interface VgpuBatchMatrix extends VgpuMatrix {
+  readonly entries: readonly { readonly packedWordOffset: number; readonly normOffset: number }[];
 }
 
 export interface VGPUBackendOptions {
@@ -63,8 +65,12 @@ export class VGPUBackend implements InferenceBackend {
   readonly #outputs = new Map<number, StorageBuffer>();
   readonly #parameters: StorageBuffer;
   readonly #codebook: StorageBuffer;
+  readonly #maximumInputBytes: number;
+  readonly #maximumOutputBytes: number;
   readonly #matrixCache = new WeakMap<CqMatrix, VgpuMatrix>();
+  readonly #batchMatrixCache = new Map<string, VgpuBatchMatrix>();
   readonly #minimumGpuRows: number;
+  #batchCompute: Compute | undefined;
   #disposed = false;
 
   private constructor(
@@ -80,11 +86,17 @@ export class VGPUBackend implements InferenceBackend {
     this.#minimumGpuRows = minimumGpuRows;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
-    this.#input = module.storage(gpu, align4(maximumInput * 4), "read");
-    this.#parameters = module.storage(gpu, 32, "read");
+    const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
+    this.#maximumInputBytes = align4(maximumInput * 4 * MAX_BATCH_JOBS);
+    this.#maximumOutputBytes = align4(maximumOutput * 4 * MAX_BATCH_JOBS);
+    this.#input = module.storage(gpu, this.#maximumInputBytes, "read");
+    this.#parameters = module.storage(gpu, 16_384, "read");
     this.#codebook = module.storage(gpu, align4(weights.codebook.byteLength), "read");
     this.#codebook.write(bufferSource(weights.codebook));
-    this.#compute = module.compute(gpu, CQ_MATVEC_WGSL, { label: "needle.vgpu.cq-matvec" });
+    this.#compute = module.compute(gpu, CQ_MATVEC_WGSL, {
+      label: "needle.vgpu.cq-matvec",
+      entry: "main",
+    });
   }
 
   static async create(
@@ -165,8 +177,15 @@ export class VGPUBackend implements InferenceBackend {
 
     const results = new Array<Float32Array>(requests.length);
     const preparedCache = new Map<Float32Array, Map<string, Float32Array>>();
-    const reads: BatchRead[] = [];
-    let uploadedInput: Float32Array | undefined;
+    const jobs: Array<{
+      index: number;
+      matrix: CqMatrix;
+      prepared: Float32Array;
+      rowStart: number;
+      rowCount: number;
+      outputStart: number;
+    }> = [];
+    let outputCount = 0;
 
     for (let index = 0; index < requests.length; index++) {
       const request = requests[index];
@@ -189,34 +208,62 @@ export class VGPUBackend implements InferenceBackend {
         results[index] = cqMatvecPrepared(matrix, prepared, rowStart, rowCount);
         continue;
       }
-
-      const gpuMatrix = this.#gpuMatrix(matrix);
-      const output = this.#output(rowCount);
-      if (uploadedInput !== prepared) {
-        this.#input.write(bufferSource(prepared));
-        uploadedInput = prepared;
-      }
-      this.#parameters.write(bufferSource(matrixParameters(matrix, rowStart, rowCount)));
-      this.#compute.set({
-        packed: gpuMatrix.packed,
-        norms: gpuMatrix.norms,
-        input: this.#input,
-        codebook: this.#codebook,
-        params: this.#parameters,
-        output,
-      });
-      this.#compute.dispatch(rowCount);
-      // read() submits its copy before yielding. Queue ordering preserves this
-      // result even when the next request reuses the same output-size buffer.
-      reads.push({ index, rowCount, bytes: output.read() });
+      jobs.push({ index, matrix, prepared, rowStart, rowCount, outputStart: outputCount });
+      outputCount += rowCount;
     }
 
-    const buffers = await Promise.all(reads.map((read) => read.bytes));
-    for (let index = 0; index < reads.length; index++) {
-      const read = reads[index];
-      const bytes = buffers[index];
-      invariant(read && bytes, "BACKEND_UNAVAILABLE", "vgpu batch readback is missing");
-      results[read.index] = new Float32Array(bytes, 0, read.rowCount);
+    if (jobs.length === 0) return results;
+    const inputOffsets = new Map<Float32Array, number>();
+    let inputCount = 0;
+    for (const job of jobs) {
+      if (!inputOffsets.has(job.prepared)) {
+        inputOffsets.set(job.prepared, inputCount);
+        inputCount += job.prepared.length;
+      }
+    }
+    invariant(
+      inputCount * 4 <= this.#maximumInputBytes && outputCount * 4 <= this.#maximumOutputBytes,
+      "BACKEND_UNAVAILABLE",
+      "vgpu matvec batch exceeds its input or output arena",
+    );
+
+    const batchInput = new Float32Array(inputCount);
+    for (const [prepared, offset] of inputOffsets) batchInput.set(prepared, offset);
+    const batchMatrix = this.#gpuBatchMatrix(jobs.map((job) => job.matrix));
+    const parameters = batchMatrixParameters(
+      jobs.map((job, index) => {
+        const entry = batchMatrix.entries[index];
+        const inputOffset = inputOffsets.get(job.prepared);
+        invariant(entry && inputOffset !== undefined, "BACKEND_UNAVAILABLE", "Invalid GPU batch");
+        return {
+          matrix: job.matrix,
+          rowStart: job.rowStart,
+          rowCount: job.rowCount,
+          outputStart: job.outputStart,
+          inputOffset,
+          packedWordOffset: entry.packedWordOffset,
+          normOffset: entry.normOffset,
+        };
+      }),
+    );
+    invariant(parameters.byteLength <= 16_384, "BACKEND_UNAVAILABLE", "GPU batch is too large");
+    const output = this.#output(outputCount);
+    this.#input.write(bufferSource(batchInput));
+    this.#parameters.write(bufferSource(parameters));
+    const batchCompute = this.#getBatchCompute();
+    batchCompute.set({
+      packed: batchMatrix.packed,
+      norms: batchMatrix.norms,
+      input: this.#input,
+      codebook: this.#codebook,
+      params: this.#parameters,
+      output,
+    });
+    batchCompute.dispatch(outputCount);
+    const bytes = await output.read();
+    const combined = new Float32Array(bytes, 0, outputCount);
+    for (const job of jobs) {
+      results[job.index] = combined.slice(job.outputStart, job.outputStart + job.rowCount);
     }
     return results;
   }
@@ -233,6 +280,16 @@ export class VGPUBackend implements InferenceBackend {
     if (this.#ownsGpu) this.gpu.dispose();
   }
 
+  #getBatchCompute(): Compute {
+    if (!this.#batchCompute) {
+      this.#batchCompute = this.#module.compute(this.gpu, CQ_MATVEC_WGSL, {
+        label: "needle.vgpu.cq-matvec-batch",
+        entry: "batch_main",
+      });
+    }
+    return this.#batchCompute;
+  }
+
   #output(rowCount: number): StorageBuffer {
     let output = this.#outputs.get(rowCount);
     if (!output) {
@@ -240,6 +297,20 @@ export class VGPUBackend implements InferenceBackend {
       this.#outputs.set(rowCount, output);
     }
     return output;
+  }
+
+  #gpuBatchMatrix(matrices: readonly CqMatrix[]): VgpuBatchMatrix {
+    const key = matrices.map((matrix) => matrix.record.index).join(":");
+    const cached = this.#batchMatrixCache.get(key);
+    if (cached) return cached;
+    const data = webGpuBatchMatrixData(matrices);
+    const packed = this.#module.storage(this.gpu, align4(data.packedWords.byteLength), "read");
+    const norms = this.#module.storage(this.gpu, align4(data.norms.byteLength), "read");
+    packed.write(bufferSource(data.packedWords));
+    norms.write(bufferSource(data.norms));
+    const result = { packed, norms, entries: data.entries };
+    this.#batchMatrixCache.set(key, result);
+    return result;
   }
 
   #gpuMatrix(matrix: CqMatrix): VgpuMatrix {

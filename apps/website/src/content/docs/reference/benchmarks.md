@@ -42,10 +42,10 @@ This reduces host synchronization from roughly 220 individual matvec boundaries 
 
 | Backend | Median tok/s | Median ms / 32 tokens |
 | --- | ---: | ---: |
-| TypeGPU, every matvec on WebGPU | 20.9 | 1,531 |
-| vgpu, every matvec on WebGPU | 19.4 | 1,653 |
+| TypeGPU, every matvec on WebGPU | 21.0 | 1,524 |
+| vgpu, every matvec on WebGPU | 23.3 | 1,376 |
 
-These diagnostic medians use two warmups and five timed runs. Before batching, the same all-WebGPU paths measured 6.68 tok/s for TypeGPU and 11.33 tok/s for vgpu.
+These diagnostic medians use two warmups and three timed runs. Before batching, the same all-WebGPU paths measured 6.68 tok/s for TypeGPU and 11.33 tok/s for vgpu. A batch now uses one dispatch over cached, combined matrix arenas rather than one dispatch per projection.
 
 A future fully resident engine could keep hidden state, intermediate activations, and KV cache on GPU; encode dependent kernels into a small number of command buffers; and read back only selected tokens or final logits. That is the path to reducing synchronization from about 83 groups to one boundary per generated token.
 

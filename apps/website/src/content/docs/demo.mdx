@@ -7,22 +7,29 @@ pagefind: false
 
 import NeedleDemo from '../../components/NeedleDemo.tsx';
 
-<div class="demo-intro not-content">
-  <p class="demo-eyebrow">Browser playground</p>
-  <h1>Three APIs. One local model.</h1>
-  <p>
-    Compare the direct library, Vercel AI SDK, and pi Agent execution loops without sending inference data to a server.
+<div class="not-content mx-auto mb-8 max-w-3xl text-center">
+  <p class="m-0 text-xs font-semibold tracking-[0.08em] text-[var(--sl-color-gray-3)] uppercase">Needle smart home</p>
+  <h1 class="mt-2 mb-0 text-[clamp(2rem,5vw,3rem)] leading-[1.08] font-bold tracking-[-0.035em] text-[var(--sl-color-white)]">A cozy room with a local brain.</h1>
+  <p class="mx-auto mt-4 mb-0 max-w-2xl text-base leading-[1.65] text-[var(--sl-color-gray-2)]">
+    Compare the direct library, Vercel AI SDK, and pi Agent execution loops on resident WebGPU or the pure TypeScript reference backend—without sending inference data to a server.
   </p>
 </div>
 
 <NeedleDemo client:only="preact" />
 
 :::caution[Expect a deliberate first run]
-The first click downloads 13.7 MB and pure TypeScript prefill may take a few seconds, especially on mobile. Later examples reuse the same in-memory model and browser cache.
+The first click downloads 13.7 MB and compiles the selected engine. **Resident WebGPU** is the default; if initialization fails, the demo reports the fallback and uses pure TypeScript. CPU prefill may take a few seconds, especially on mobile. Later examples reuse the same in-memory model and browser cache.
 :::
+
+## Choose the execution engine
+
+- **Resident WebGPU** keeps hidden lanes, KV cache, attention, engrams, confidence, and constrained token selection on the GPU. It requires browser WebGPU and TypeGPU.
+- **Pure TypeScript** is the portable numerical reference and requires no GPU, WASM, or native addon.
+
+Changing the selector disposes the loaded model and initializes the newly selected backend on the next run. The output panel always shows the backend that actually executed the request.
 
 ## What stays local?
 
-The model archive is fetched from the pinned Hugging Face revision. Your prompt, generated reasoning, tool arguments, and tool results stay in the page. The sample tool only returns `{ "flashlight": "on" }` and does not access device hardware.
+The model archive is fetched from the pinned Hugging Face revision. Your prompt, generated reasoning, tool arguments, tool results, and simulated room state stay in the page. The smart-home tools only update this local bedroom visualization and do not access device hardware.
 
-For the most reliable first result, keep the default **“Turn on the flashlight.”** prompt. Needle is a compact action model; unrelated conversational prompts may correctly decline with `[]`.
+For the most reliable first result, choose one of the suggested light, curtain, fan, or room-status instructions. Needle is a compact action model; unrelated conversational prompts may correctly decline with `[]`.

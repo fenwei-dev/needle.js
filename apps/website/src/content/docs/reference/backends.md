@@ -134,7 +134,8 @@ The resident implementation no longer lives inside the TypeGPU adapter. It is or
 
 ```text
 src/resident/
-  session.ts        # model state and execution lifecycle
+  session.ts        # token/layer execution orchestration
+  engram.ts         # gather, projection, convolution ring, injection
   pipelines.ts      # shader-module and pipeline compilation
   kernels.ts        # WGSL kernels
   confidence.ts     # online confidence pooling/head
@@ -157,7 +158,7 @@ src/backends/typegpu-kernels.ts
   # TypeGPU compute functions and shader dependency composition
 ```
 
-`WebGpuResidentSession` depends only on `GPUDevice`, parsed model weights, and neutral resident options. TypeGPU is the supported public integration.
+`WebGpuResidentSession` depends only on `GPUDevice`, parsed model weights, and neutral resident options. Resident engram resource allocation, reset, table gather/dequantization, CQ projection, convolution-ring updates, and injection groups live in the separate `ResidentEngramState` component; the session provides shared matrix and projection access through a narrow GPU interface. TypeGPU is the supported public integration.
 
 Dynamic query, KV, and attention parameter blocks use TypeGPU `d.struct` schemas and root-owned typed storage buffers. Primary resident state—including lanes, QKV, attention/MLP intermediates, engram rings, logits, and int8-as-i32 KV storage—uses TypeGPU `d.arrayOf` schemas through a neutral resource factory. The adapter supplies them through `ResidentParameterFactory`; the resident core sees named values and raw buffers, not TypeGPU implementation types. A raw factory remains available as the portability/reference implementation. The resource contract also owns disposal: TypeGPU-created raw handles resolve back to their typed wrappers for destruction, while the raw factory destroys its own `GPUBuffer` objects. The session no longer double-manages TypeGPU resources. The CQ, query normalization/RoPE, KV-store, attention-score, softmax/value-mixing, confidence-pool/head, and constrained-selection passes use TypeGPU bind-group layouts and explicit pipeline layouts. Resident query normalization/RoPE and packed CQ matvec are compiled as TypeGPU `computeFn` pipelines; TypeGPU owns its workgroup variables, binding dependencies, generated declarations, and pipeline. Their function bodies remain inline WGSL so the published library does not require consumers to configure `unplugin-typegpu`. Raw command encoding preserves the measured scheduling behavior. The adaptive operator path retains its faster measured raw CQ pipeline; resident execution uses the TypeGPU CQ pipeline. This recovers TypeGPU's compile-time layouts, typed writes, root ownership, and binding validation without coupling the execution graph or regressing throughput.
 

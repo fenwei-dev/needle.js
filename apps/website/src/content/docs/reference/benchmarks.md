@@ -7,19 +7,19 @@ Needle 2 generation was timed in **Bun.WebView** (system WKWebView on macOS) so 
 
 ## Latest numbers
 
-The default GPU configuration is adaptive: CQ projections with fewer than 1,024 output rows stay on CPU, while the official model's 8,192-row vocabulary projection runs on WebGPU.
+The canonical GPU result uses `execution: "resident"`; the complete layer graph, engrams, confidence state, and vocabulary projection remain on WebGPU.
 
 | Backend | Status | Load (ms) | Median tok/s | Median ms / 32 tokens |
 | --- | --- | ---: | ---: | ---: |
-| Pure TypeScript (`cpu`) | ok | 18 | 44.2 | 725 |
-| TypeGPU + WebGPU | ok | 17 | **50.8** | 630 |
+| Pure TypeScript (`cpu`) | ok | 24 | 45.3 | 707 |
+| TypeGPU resident WebGPU | ok | 19 | **54.7** | 585 |
 
-- **Host:** macOS `darwin arm64`, Bun 1.4.0 WebView
+- **Host:** Apple M4 (`Mac16,12`), macOS `darwin arm64`, Bun 1.4.0 WebView
 - **User agent:** `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)`
 - **WebGPU:** available
-- **Workload:** warmup 1 + 2 timed runs, 32 new tokens, temperature 0
+- **Workload:** 3 warmups + 10 timed runs, 32 new tokens, temperature 0
 - **Prompt:** `The most surprising thing about local inference is` (13 prompt tokens)
-- **GPU cutoff:** `minimumGpuRows: 1024` (the default)
+- **Execution:** `resident`
 
 TypeGPU produced the same greedy text as CPU on this prompt.
 
@@ -59,10 +59,10 @@ For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok
 
 | Resident-layer workload | CPU | TypeGPU resident layers |
 | --- | ---: | ---: |
-| Standard prompt, 32 generated tokens | 41.3 tok/s | **52.0 tok/s** |
+| Standard prompt, 32 generated tokens | 45.3 tok/s | **54.7 tok/s** |
 | 98-token prompt, 8 generated tokens | 4.68 tok/s | **5.40 tok/s** |
 
-The resident path matched CPU greedy text in both workloads.
+The resident path matched CPU greedy text in both workloads. The canonical ten-run JSON report is [stored in the repository](https://github.com/fenwei-dev/needle.js/blob/main/packages/needle.js/benchmarks/2026-09-02-macos-m4-webkit.json).
 
 ### One submission per token experiment
 
@@ -80,6 +80,8 @@ The resident confidence implementation maintains eight online probe pools from t
 | TypeGPU resident | same | 0.7481 | **1,016 ms** |
 
 A prompt-only probe check differed by about `1.1e-9`; the final turn's small confidence difference includes accumulated f32 model, resident engram, and token-log-probability differences. Both paths selected the exact same schema-constrained token sequence.
+
+A broader committed corpus covers 20 commands across flashlight, weather, timers, volume, brightness, messaging, calendar, conversion, lights, and reminders. CPU and resident TypeGPU produced **zero call/argument mismatches** and **zero decision mismatches** at confidence thresholds 0.7, 0.8, and 0.9. Median confidence delta was `0.00023`; mean was `0.00170`; maximum was `0.01122`. See the [raw corpus report](https://github.com/fenwei-dev/needle.js/blob/main/packages/needle.js/benchmarks/2026-09-02-tool-confidence-corpus.json).
 
 ### Resident engrams
 
@@ -111,6 +113,9 @@ bun run --cwd packages/needle.js bench -- --execution resident
 
 # Compare resident confidence and constrained tool selection
 bun run --cwd packages/needle.js bench -- --execution resident --confidence --tool-parity
+
+# Run the reusable 20-command confidence/tool corpus
+bun run --cwd packages/needle.js test:corpus
 
 # Diagnostic one-submission token builder
 bun run --cwd packages/needle.js bench -- --execution resident --single-submission

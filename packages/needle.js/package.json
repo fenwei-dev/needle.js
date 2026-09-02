@@ -46,6 +46,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "bench": "bun run scripts/bench.ts",
     "test:browser": "bun run scripts/test-resident-browser.ts",
+    "test:corpus": "bun run scripts/test-resident-browser.ts --corpus",
     "embed:model": "bun run scripts/embed-model.ts"
   },
   "dependencies": {

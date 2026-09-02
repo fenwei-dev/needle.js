@@ -157,12 +157,12 @@ const model = await NeedleModel.load({ backend: "auto", weights: "download" });
 
 ## Benchmarks
 
-Greedy generation of 32 tokens in Bun.WebView (WKWebView + WebGPU, macOS arm64, Bun 1.4.0), same `.cact` weights and prompt for every backend:
+Greedy generation of 32 tokens in Bun.WebView (WKWebView + WebGPU, Apple M4, Bun 1.4.0), using three warmups, ten timed runs, and the same `.cact` weights and prompt:
 
 | Backend | Median tok/s | Median ms / 32 tokens |
 | --- | ---: | ---: |
-| Pure TypeScript | 44.2 | 725 |
-| TypeGPU | **50.8** | 630 |
+| Pure TypeScript | 45.3 | 707 |
+| TypeGPU resident | **54.7** | 585 |
 
 The WebGPU shader reduces each CQ row across a 32-lane workgroup. Independent mHC, Q/K/V/gate, and engram projections are packed into one matrix arena and executed with one dispatch and one host synchronization per group. By default, projections below 1,024 output rows still stay on CPU because their readback cost exceeds their compute time; for the official model, WebGPU therefore handles the 8,192-row vocabulary projection. Forcing every matvec onto WebGPU measures about 21 tok/s with the operator path; resident execution avoids those per-operator boundaries and reaches about 52 tok/s. Reproduce with:
 
@@ -172,13 +172,13 @@ bun run bench -- --tokens 32 --warmup 1 --runs 2 --json
 bun run bench -- --minimum-gpu-rows 0 # diagnostic all-WebGPU matvec path
 ```
 
-Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/).
+Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/). The canonical raw report is committed at [`benchmarks/2026-09-02-macos-m4-webkit.json`](https://github.com/fenwei-dev/needle.js/blob/main/packages/needle.js/benchmarks/2026-09-02-macos-m4-webkit.json).
 
 TypeGPU also has opt-in residency experiments. `fusedAttention` keeps Q/K/V, int8 KV state, attention, gating, and output projection on GPU; `fusedMlp` adds sandwich residuals and both 512-point Hadamard transforms; `fusedRouting` adds h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. The individual stages preserve greedy output but cost more than CPU while lane state still round-trips.
 
 `execution: "resident"` removes that round trip. It retains all 2,048 lane values and performs mHC pre-projections/gating, engram table gather/dequantization and convolution, attention, MLP, post-routing, final RMSNorm, and vocabulary projection on GPU. JavaScript computes only the four tiny n-gram hashes and uploads their row IDs; engram keys and values never leave GPU memory. Non-logit prefill steps have no layer/final readback. Raw generation can read the vocabulary once; high-level tool calling instead uploads the grammar's allowed token IDs and reads only the selected ID plus log probability.
 
-The confidence path is resident too: eight online probe pools are updated from the embedding and every layer mean, and the final confidence projection returns one score. On the flashlight integration turn, CPU and resident TypeGPU produced the same call in 1,153 ms and 1,016 ms respectively; final confidence was 0.7526 vs 0.7481. Raw forced-all-GPU throughput measured **52.0 tok/s** on the standard prompt and 5.40 tok/s for a 98-token prompt, versus CPU's 41.6 and 4.68 tok/s in paired runs.
+The confidence path is resident too: eight online probe pools are updated from the embedding and every layer mean, and the final confidence projection returns one score. Across the committed 20-command corpus, CPU and resident TypeGPU had zero call/argument mismatches and zero threshold-decision mismatches at 0.7/0.8/0.9; median confidence delta was 0.00023 and maximum delta was 0.01122. On the flashlight integration turn, CPU and resident TypeGPU produced the same call in 1,153 ms and 1,016 ms respectively; final confidence was 0.7526 vs 0.7481. Canonical resident throughput measured **54.7 tok/s** on the standard prompt and 5.40 tok/s for a 98-token prompt, versus CPU's 41.6 and 4.68 tok/s in paired runs.
 
 ## Weight sources
 
@@ -335,6 +335,7 @@ bun test
 bun run build
 bun run bench
 NEEDLE_MODEL_PATH=/path/to/needle2.cact bun run test:browser
+NEEDLE_MODEL_PATH=/path/to/needle2.cact bun run test:corpus
 ```
 
 Run the parity integration test against an official archive:

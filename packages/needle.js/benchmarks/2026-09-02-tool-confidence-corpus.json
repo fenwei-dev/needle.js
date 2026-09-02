@@ -1,0 +1,199 @@
+{
+  "when": "2026-09-02T14:15:31.912672Z",
+  "environment": {
+    "runtime": "Bun 1.4.0 WebView",
+    "platform": "darwin arm64",
+    "browser": "WKWebView / WebGPU",
+    "hardware": "Apple M4 (Mac16,12)",
+    "gitCommit": "8c04cc4"
+  },
+  "thresholds": [0.7, 0.8, 0.9],
+  "entries": [
+    {
+      "id": "flashlight-on",
+      "prompt": "Turn on the flashlight.",
+      "callsMatch": true,
+      "cpuConfidence": 0.6281881427313205,
+      "gpuConfidence": 0.6174263452392132,
+      "confidenceDelta": 0.010761797492107261,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "flashlight-off",
+      "prompt": "Turn off the flashlight.",
+      "callsMatch": true,
+      "cpuConfidence": 0.7851357245173683,
+      "gpuConfidence": 0.786307026611911,
+      "confidenceDelta": 0.0011713020945426367,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "weather-lagos",
+      "prompt": "What is the weather in Lagos?",
+      "callsMatch": true,
+      "cpuConfidence": 0.7190786038696466,
+      "gpuConfidence": 0.7221285090828472,
+      "confidenceDelta": 0.0030499052132005877,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "weather-tokyo",
+      "prompt": "Check the current weather in Tokyo.",
+      "callsMatch": true,
+      "cpuConfidence": 0.7981352636857203,
+      "gpuConfidence": 0.7989959137444833,
+      "confidenceDelta": 0.0008606500587630128,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "timer-ten-minutes",
+      "prompt": "Set a timer for ten minutes.",
+      "callsMatch": true,
+      "cpuConfidence": 0.0007212794108076403,
+      "gpuConfidence": 0.0007285457565983297,
+      "confidenceDelta": 7.266345790689398e-6,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "timer-thirty-seconds",
+      "prompt": "Start a 30 second timer.",
+      "callsMatch": true,
+      "cpuConfidence": 0.12202685600267504,
+      "gpuConfidence": 0.12420710074339578,
+      "confidenceDelta": 0.0021802447407207326,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "volume-thirty",
+      "prompt": "Set the volume to 30 percent.",
+      "callsMatch": true,
+      "cpuConfidence": 0.06713035001143822,
+      "gpuConfidence": 0.06891297549009323,
+      "confidenceDelta": 0.0017826254786550144,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "volume-mute",
+      "prompt": "Mute the speakers.",
+      "callsMatch": true,
+      "cpuConfidence": 0.3267116630939317,
+      "gpuConfidence": 0.3379271328449249,
+      "confidenceDelta": 0.011215469750993246,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "brightness-seventy-five",
+      "prompt": "Set screen brightness to 75 percent.",
+      "callsMatch": true,
+      "cpuConfidence": 0.9985902616330002,
+      "gpuConfidence": 0.9985698565055816,
+      "confidenceDelta": 2.040512741863232e-5,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "brightness-low",
+      "prompt": "Dim the screen to 20 percent.",
+      "callsMatch": true,
+      "cpuConfidence": 0.9990325632495759,
+      "gpuConfidence": 0.9990479489132357,
+      "confidenceDelta": 1.5385663659772675e-5,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "message-alex",
+      "prompt": "Send Alex a message saying I will be ten minutes late.",
+      "callsMatch": true,
+      "cpuConfidence": 0.0016803040722099588,
+      "gpuConfidence": 0.001710071344859898,
+      "confidenceDelta": 2.976727264993929e-5,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "message-maya",
+      "prompt": "Text Maya: dinner is ready.",
+      "callsMatch": true,
+      "cpuConfidence": 0.0006832649754905084,
+      "gpuConfidence": 0.0006856992840766907,
+      "confidenceDelta": 2.4343085861822664e-6,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "calendar-lunch",
+      "prompt": "Add lunch with Sam tomorrow at noon to my calendar.",
+      "callsMatch": true,
+      "cpuConfidence": 2.43240278529789e-8,
+      "gpuConfidence": 2.4365352739026046e-8,
+      "confidenceDelta": 4.132488604714672e-11,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "calendar-review",
+      "prompt": "Schedule a project review for Friday at 3 PM.",
+      "callsMatch": true,
+      "cpuConfidence": 0.5202612544294999,
+      "gpuConfidence": 0.5198264122009277,
+      "confidenceDelta": 0.00043484222857215205,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "convert-distance",
+      "prompt": "Convert 12 kilometers to miles.",
+      "callsMatch": true,
+      "cpuConfidence": 0.06008729649658954,
+      "gpuConfidence": 0.0580153726041317,
+      "confidenceDelta": 0.00207192389245784,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "convert-temperature",
+      "prompt": "Convert 72 degrees Fahrenheit to Celsius.",
+      "callsMatch": true,
+      "cpuConfidence": 3.5898105204197245e-9,
+      "gpuConfidence": 3.538670950808052e-9,
+      "confidenceDelta": 5.113956961167245e-11,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "lights-study",
+      "prompt": "Set the study lights to 40 percent.",
+      "callsMatch": true,
+      "cpuConfidence": 4.293997811741002e-9,
+      "gpuConfidence": 4.206501866623223e-9,
+      "confidenceDelta": 8.749594511777934e-11,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "lights-bedroom",
+      "prompt": "Turn the bedroom lights off.",
+      "callsMatch": true,
+      "cpuConfidence": 0.7948149979079571,
+      "gpuConfidence": 0.7952843276083984,
+      "confidenceDelta": 0.0004693297004413344,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "reminder-medicine",
+      "prompt": "Remind me to take medicine at 8 PM.",
+      "callsMatch": true,
+      "cpuConfidence": 1.7535639906739844e-9,
+      "gpuConfidence": 1.7910004088354373e-9,
+      "confidenceDelta": 3.743641816145295e-11,
+      "thresholdMismatches": []
+    },
+    {
+      "id": "reminder-call",
+      "prompt": "Remind me tomorrow morning to call the dentist.",
+      "callsMatch": true,
+      "cpuConfidence": 1.4227287575329855e-9,
+      "gpuConfidence": 1.4079888255728117e-9,
+      "confidenceDelta": 1.4739931960173818e-11,
+      "thresholdMismatches": []
+    }
+  ],
+  "callMismatches": 0,
+  "thresholdMismatches": 0,
+  "maximumConfidenceDelta": 0.011215469750993246,
+  "elapsedMs": 128985.00000000001,
+  "medianConfidenceDelta": 0.00023230475061104567,
+  "meanConfidenceDelta": 0.0017036674800347891
+}

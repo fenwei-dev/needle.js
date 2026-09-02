@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { loadWeights } from "../src/weights/source.ts";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
+const runCorpus = process.argv.includes("--corpus");
 const packageRoot = join(scripts, "..");
 const outdir = join(packageRoot, ".resident-test");
 mkdirSync(outdir, { recursive: true });
@@ -92,11 +93,26 @@ try {
     );
   } else {
     if (!hasAdapter) throw new Error(`${backend} WebGPU adapter is unavailable`);
-    const result = await view.evaluate(
-      `window.runNeedleResidentSuite(${JSON.stringify(`${origin}/model.cact`)})`,
-    );
+    const modelUrl = `${origin}/model.cact`;
+    const result = runCorpus
+      ? await view.evaluate(
+          `window.runNeedleConfidenceCorpus(${JSON.stringify(modelUrl)}, ${JSON.stringify(
+            await Bun.file(join(packageRoot, "benchmarks/tool-confidence-corpus.json")).json(),
+          )})`,
+        )
+      : await view.evaluate(`window.runNeedleResidentSuite(${JSON.stringify(modelUrl)})`);
+    if (runCorpus) {
+      const summary = result as { callMismatches: number; thresholdMismatches: number };
+      if (summary.callMismatches > 0 || summary.thresholdMismatches > 0) {
+        throw new Error(
+          `confidence corpus diverged: ${summary.callMismatches} calls, ${summary.thresholdMismatches} thresholds`,
+        );
+      }
+    }
     console.log(JSON.stringify(result, null, 2));
-    process.stderr.write("resident browser suite passed\n");
+    process.stderr.write(
+      runCorpus ? "confidence corpus passed\n" : "resident browser suite passed\n",
+    );
   }
 } finally {
   view.close();

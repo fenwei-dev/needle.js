@@ -1,0 +1,181 @@
+{
+  "when": "2026-09-02T14:05:08.816Z",
+  "environment": {
+    "runtime": "Bun 1.4.0 WebView",
+    "platform": "darwin arm64",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+    "webgpu": true,
+    "hardware": "Apple M4 (Mac16,12)",
+    "gitCommit": "8c04cc4"
+  },
+  "options": {
+    "weights": "needle2.cact sha256:b43aabfcaf1a6db6acf488076eab71d823c08697c7af4521fc1d174b60ede5ba",
+    "tokens": 32,
+    "warmup": 3,
+    "runs": 10,
+    "prompt": "The most surprising thing about local inference is",
+    "minimumGpuRows": 1024,
+    "execution": "resident",
+    "fusedAttention": false,
+    "fusedMlp": false,
+    "fusedRouting": false,
+    "residentLayers": false,
+    "singleTokenSubmission": false,
+    "collectConfidence": false,
+    "toolParity": false
+  },
+  "results": [
+    {
+      "backend": "cpu",
+      "status": "ok",
+      "loadMs": 24,
+      "warmupMs": 2208,
+      "runs": [
+        {
+          "elapsedMs": 703,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.51920341394026,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 712,
+          "generatedTokens": 32,
+          "tokensPerSecond": 44.943820224719104,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 709,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.13399153737659,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 705,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.39007092198582,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 697,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.91104734576758,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 709,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.13399153737659,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 707,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.26166902404526,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 707.0000000000009,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.2616690240452,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 708,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.19774011299435,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 703,
+          "generatedTokens": 32,
+          "tokensPerSecond": 45.51920341394026,
+          "promptTokens": 13
+        }
+      ],
+      "generatedText": "'local_in_surprising' (local_in_surprising) and 'local_in_s",
+      "finishReason": "length",
+      "summary": {
+        "medianTokensPerSecond": 45.26166902404523,
+        "medianElapsedMs": 707.0000000000005,
+        "minimumTokensPerSecond": 44.943820224719104,
+        "maximumTokensPerSecond": 45.91104734576758
+      }
+    },
+    {
+      "backend": "typegpu",
+      "status": "ok",
+      "loadMs": 19,
+      "warmupMs": 1792,
+      "runs": [
+        {
+          "elapsedMs": 584,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.79452054794521,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 585,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.700854700854705,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 584,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.79452054794521,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 586,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.60750853242321,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 588,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.421768707483,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 588,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.421768707483,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 584,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.79452054794521,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 586,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.60750853242321,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 584,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.79452054794521,
+          "promptTokens": 13
+        },
+        {
+          "elapsedMs": 582,
+          "generatedTokens": 32,
+          "tokensPerSecond": 54.98281786941581,
+          "promptTokens": 13
+        }
+      ],
+      "generatedText": "'local_in_surprising' (local_in_surprising) and 'local_in_s",
+      "finishReason": "length",
+      "summary": {
+        "medianTokensPerSecond": 54.74768762439996,
+        "medianElapsedMs": 584.5,
+        "minimumTokensPerSecond": 54.421768707483,
+        "maximumTokensPerSecond": 54.98281786941581
+      }
+    }
+  ]
+}

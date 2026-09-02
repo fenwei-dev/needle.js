@@ -1,0 +1,22 @@
+[
+  { "id": "flashlight-on", "prompt": "Turn on the flashlight." },
+  { "id": "flashlight-off", "prompt": "Turn off the flashlight." },
+  { "id": "weather-lagos", "prompt": "What is the weather in Lagos?" },
+  { "id": "weather-tokyo", "prompt": "Check the current weather in Tokyo." },
+  { "id": "timer-ten-minutes", "prompt": "Set a timer for ten minutes." },
+  { "id": "timer-thirty-seconds", "prompt": "Start a 30 second timer." },
+  { "id": "volume-thirty", "prompt": "Set the volume to 30 percent." },
+  { "id": "volume-mute", "prompt": "Mute the speakers." },
+  { "id": "brightness-seventy-five", "prompt": "Set screen brightness to 75 percent." },
+  { "id": "brightness-low", "prompt": "Dim the screen to 20 percent." },
+  { "id": "message-alex", "prompt": "Send Alex a message saying I will be ten minutes late." },
+  { "id": "message-maya", "prompt": "Text Maya: dinner is ready." },
+  { "id": "calendar-lunch", "prompt": "Add lunch with Sam tomorrow at noon to my calendar." },
+  { "id": "calendar-review", "prompt": "Schedule a project review for Friday at 3 PM." },
+  { "id": "convert-distance", "prompt": "Convert 12 kilometers to miles." },
+  { "id": "convert-temperature", "prompt": "Convert 72 degrees Fahrenheit to Celsius." },
+  { "id": "lights-study", "prompt": "Set the study lights to 40 percent." },
+  { "id": "lights-bedroom", "prompt": "Turn the bedroom lights off." },
+  { "id": "reminder-medicine", "prompt": "Remind me to take medicine at 8 PM." },
+  { "id": "reminder-call", "prompt": "Remind me tomorrow morning to call the dentist." }
+]

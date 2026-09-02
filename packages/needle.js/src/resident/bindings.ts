@@ -43,6 +43,29 @@ export interface AttentionBindingResources {
   readonly output: GPUBuffer;
 }
 
+export interface ConfidencePoolBindingResources {
+  readonly lanes: GPUBuffer;
+  readonly probes: GPUBuffer;
+  readonly maxima: GPUBuffer;
+  readonly denominators: GPUBuffer;
+  readonly weighted: GPUBuffer;
+}
+
+export interface ConfidenceHeadBindingResources {
+  readonly denominators: GPUBuffer;
+  readonly weighted: GPUBuffer;
+  readonly projection: GPUBuffer;
+  readonly bias: GPUBuffer;
+  readonly result: GPUBuffer;
+}
+
+export interface SelectionBindingResources {
+  readonly logits: GPUBuffer;
+  readonly allowed: GPUBuffer;
+  readonly params: GPUBuffer;
+  readonly result: GPUBuffer;
+}
+
 export interface ResidentBindingFactory {
   readonly cqLayout?: GPUBindGroupLayout;
   readonly cqPipeline?: GPUComputePipeline;
@@ -51,9 +74,15 @@ export interface ResidentBindingFactory {
   readonly kvLayout?: GPUBindGroupLayout;
   readonly scoresLayout?: GPUBindGroupLayout;
   readonly attentionLayout?: GPUBindGroupLayout;
+  readonly confidencePoolLayout?: GPUBindGroupLayout;
+  readonly confidenceHeadLayout?: GPUBindGroupLayout;
+  readonly selectionLayout?: GPUBindGroupLayout;
   createCq?(resources: CqBindingResources): GPUBindGroup;
   createQuery?(resources: QueryBindingResources): GPUBindGroup;
   createKv?(resources: KvBindingResources): GPUBindGroup;
   createScores?(resources: ScoreBindingResources): GPUBindGroup;
   createAttention?(resources: AttentionBindingResources): GPUBindGroup;
+  createConfidencePool?(resources: ConfidencePoolBindingResources): GPUBindGroup;
+  createConfidenceHead?(resources: ConfidenceHeadBindingResources): GPUBindGroup;
+  createSelection?(resources: SelectionBindingResources): GPUBindGroup;
 }

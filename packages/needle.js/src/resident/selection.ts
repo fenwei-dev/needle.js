@@ -2,12 +2,16 @@
 
 import type { ResidentTokenSelection } from "../backends/backend.js";
 import { invariant } from "../errors.js";
+import type { ResidentBindingFactory } from "./bindings.js";
 import type { ResidentPipelines } from "./pipelines.js";
-import { bufferSource, COPY_DST, COPY_SRC, MAP_READ, storageBuffer } from "./webgpu.js";
+import { createRawResourceFactory, type ResidentResourceFactory } from "./resources.js";
+import { bufferSource, COPY_DST, COPY_SRC, MAP_READ } from "./webgpu.js";
 
 export class ResidentTokenSelector {
   readonly #device: GPUDevice;
   readonly #vocabularySize: number;
+  readonly #resources: ResidentResourceFactory;
+  readonly #bindings: ResidentBindingFactory;
   readonly #logits: GPUBuffer;
   readonly #allowed: GPUBuffer;
   readonly #params: GPUBuffer;
@@ -15,13 +19,21 @@ export class ResidentTokenSelector {
   readonly #staging: GPUBuffer;
   #group: GPUBindGroup | undefined;
 
-  constructor(device: GPUDevice, logits: GPUBuffer, vocabularySize: number) {
+  constructor(
+    device: GPUDevice,
+    logits: GPUBuffer,
+    vocabularySize: number,
+    resources: ResidentResourceFactory = createRawResourceFactory(device),
+    bindings: ResidentBindingFactory = {},
+  ) {
     this.#device = device;
     this.#vocabularySize = vocabularySize;
+    this.#resources = resources;
+    this.#bindings = bindings;
     this.#logits = logits;
-    this.#allowed = storageBuffer(device, "needle.selection.allowed", vocabularySize * 4, COPY_DST);
-    this.#params = storageBuffer(device, "needle.selection.params", 8, COPY_DST);
-    this.#result = storageBuffer(device, "needle.selection.result", 8, COPY_SRC);
+    this.#allowed = resources.create("u32", "needle.selection.allowed", vocabularySize, COPY_DST);
+    this.#params = resources.create("u32", "needle.selection.params", 2, COPY_DST);
+    this.#result = resources.create("u32", "needle.selection.result", 2, COPY_SRC);
     this.#staging = device.createBuffer({
       label: "needle.selection.readback",
       size: 8,
@@ -65,23 +77,31 @@ export class ResidentTokenSelector {
   }
 
   dispose(): void {
-    this.#allowed.destroy();
-    this.#params.destroy();
-    this.#result.destroy();
+    for (const buffer of [this.#allowed, this.#params, this.#result]) {
+      if (!this.#resources.destroy(buffer)) buffer.destroy();
+    }
     this.#staging.destroy();
   }
 
   #getGroup(pipeline: GPUComputePipeline): GPUBindGroup {
     if (this.#group) return this.#group;
-    this.#group = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.#logits } },
-        { binding: 1, resource: { buffer: this.#allowed } },
-        { binding: 2, resource: { buffer: this.#params } },
-        { binding: 3, resource: { buffer: this.#result } },
-      ],
-    });
+    const resources = {
+      logits: this.#logits,
+      allowed: this.#allowed,
+      params: this.#params,
+      result: this.#result,
+    };
+    this.#group =
+      this.#bindings.createSelection?.(resources) ??
+      this.#device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: resources.logits } },
+          { binding: 1, resource: { buffer: resources.allowed } },
+          { binding: 2, resource: { buffer: resources.params } },
+          { binding: 3, resource: { buffer: resources.result } },
+        ],
+      });
     return this.#group;
   }
 }

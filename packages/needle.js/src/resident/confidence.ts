@@ -2,20 +2,16 @@
 
 import { invariant } from "../errors.js";
 import type { CactWeights } from "../model/cact.js";
+import type { ResidentBindingFactory } from "./bindings.js";
 import { supportsResidentConfidence } from "./compatibility.js";
 import type { ResidentPipelines } from "./pipelines.js";
-import {
-  bufferSource,
-  bufferWithData,
-  COPY_DST,
-  COPY_SRC,
-  MAP_READ,
-  STORAGE,
-  storageBuffer,
-} from "./webgpu.js";
+import { createRawResourceFactory, type ResidentResourceFactory } from "./resources.js";
+import { bufferSource, COPY_DST, COPY_SRC, MAP_READ } from "./webgpu.js";
 
 export class ResidentConfidence {
   readonly #device: GPUDevice;
+  readonly #resources: ResidentResourceFactory;
+  readonly #bindings: ResidentBindingFactory;
   readonly #probes: GPUBuffer | undefined;
   readonly #projection: GPUBuffer | undefined;
   readonly #bias: GPUBuffer | undefined;
@@ -27,30 +23,38 @@ export class ResidentConfidence {
   #groups = new WeakMap<GPUBuffer, GPUBindGroup>();
   #headGroup: GPUBindGroup | undefined;
 
-  constructor(device: GPUDevice, weights: CactWeights) {
+  constructor(
+    device: GPUDevice,
+    weights: CactWeights,
+    resources: ResidentResourceFactory = createRawResourceFactory(device),
+    bindings: ResidentBindingFactory = {},
+  ) {
     this.#device = device;
+    this.#resources = resources;
+    this.#bindings = bindings;
     const head = weights.heads.get("confidence");
     const supported = supportsResidentConfidence(weights) && head !== undefined;
-    this.#probes = supported
-      ? bufferWithData(device, "needle.confidence.probes", head.probes, STORAGE)
-      : undefined;
+    const create = (label: string, values: Float32Array, extraUsage = 0) => {
+      const buffer = resources.create("f32", label, values.length, COPY_DST | extraUsage);
+      device.queue.writeBuffer(buffer, 0, bufferSource(values));
+      return buffer;
+    };
+    this.#probes = supported ? create("needle.confidence.probes", head.probes) : undefined;
     this.#projection = supported
-      ? bufferWithData(device, "needle.confidence.projection", head.projection, STORAGE)
+      ? create("needle.confidence.projection", head.projection)
       : undefined;
-    this.#bias = supported
-      ? bufferWithData(device, "needle.confidence.bias", head.bias, STORAGE)
-      : undefined;
+    this.#bias = supported ? create("needle.confidence.bias", head.bias) : undefined;
     this.#maxima = supported
-      ? storageBuffer(device, "needle.confidence.maxima", 8 * 4, COPY_DST)
+      ? resources.create("f32", "needle.confidence.maxima", 8, COPY_DST)
       : undefined;
     this.#denominators = supported
-      ? storageBuffer(device, "needle.confidence.denominators", 8 * 4, COPY_DST)
+      ? resources.create("f32", "needle.confidence.denominators", 8, COPY_DST)
       : undefined;
     this.#weighted = supported
-      ? storageBuffer(device, "needle.confidence.weighted", 4096 * 4, COPY_DST)
+      ? resources.create("f32", "needle.confidence.weighted", 4096, COPY_DST)
       : undefined;
     this.#result = supported
-      ? storageBuffer(device, "needle.confidence.result", 4, COPY_SRC)
+      ? resources.create("f32", "needle.confidence.result", 1, COPY_SRC)
       : undefined;
     this.#staging = supported
       ? device.createBuffer({
@@ -134,10 +138,10 @@ export class ResidentConfidence {
       this.#denominators,
       this.#weighted,
       this.#result,
-      this.#staging,
     ]) {
-      buffer?.destroy();
+      if (buffer && !this.#resources.destroy(buffer)) buffer.destroy();
     }
+    this.#staging?.destroy();
   }
 
   #getPoolGroup(source: GPUBuffer, pipeline: GPUComputePipeline): GPUBindGroup {
@@ -152,16 +156,19 @@ export class ResidentConfidence {
       "BACKEND_UNAVAILABLE",
       "Resident confidence buffers are missing",
     );
-    const group = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: source } },
-        { binding: 1, resource: { buffer: probes } },
-        { binding: 2, resource: { buffer: maxima } },
-        { binding: 3, resource: { buffer: denominators } },
-        { binding: 4, resource: { buffer: weighted } },
-      ],
-    });
+    const resources = { lanes: source, probes, maxima, denominators, weighted };
+    const group =
+      this.#bindings.createConfidencePool?.(resources) ??
+      this.#device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: resources.lanes } },
+          { binding: 1, resource: { buffer: resources.probes } },
+          { binding: 2, resource: { buffer: resources.maxima } },
+          { binding: 3, resource: { buffer: resources.denominators } },
+          { binding: 4, resource: { buffer: resources.weighted } },
+        ],
+      });
     this.#groups.set(source, group);
     return group;
   }
@@ -178,16 +185,19 @@ export class ResidentConfidence {
       "BACKEND_UNAVAILABLE",
       "Resident confidence head is missing",
     );
-    this.#headGroup = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: denominators } },
-        { binding: 1, resource: { buffer: weighted } },
-        { binding: 2, resource: { buffer: projection } },
-        { binding: 3, resource: { buffer: bias } },
-        { binding: 4, resource: { buffer: result } },
-      ],
-    });
+    const resources = { denominators, weighted, projection, bias, result };
+    this.#headGroup =
+      this.#bindings.createConfidenceHead?.(resources) ??
+      this.#device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: resources.denominators } },
+          { binding: 1, resource: { buffer: resources.weighted } },
+          { binding: 2, resource: { buffer: resources.projection } },
+          { binding: 3, resource: { buffer: resources.bias } },
+          { binding: 4, resource: { buffer: resources.result } },
+        ],
+      });
     return this.#headGroup;
   }
 }

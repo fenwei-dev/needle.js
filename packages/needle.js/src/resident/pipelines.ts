@@ -90,7 +90,13 @@ export async function createResidentPipelines(
                 ? bindings.scoresLayout
                 : label === "attention"
                   ? bindings.attentionLayout
-                  : undefined;
+                  : label === "confidence-pool"
+                    ? bindings.confidencePoolLayout
+                    : label === "confidence-head"
+                      ? bindings.confidenceHeadLayout
+                      : label === "select-token"
+                        ? bindings.selectionLayout
+                        : undefined;
       const explicitLayout = bindGroupLayout
         ? device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] })
         : undefined;

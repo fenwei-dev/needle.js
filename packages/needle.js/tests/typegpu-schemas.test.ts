@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { tgpu } from "typegpu";
 import * as d from "typegpu/data";
-import { typeGpuCqLayout, typeGpuQueryLayout } from "../src/backends/typegpu-bindings.js";
+import {
+  typeGpuConfidenceHeadLayout,
+  typeGpuConfidencePoolLayout,
+  typeGpuCqLayout,
+  typeGpuQueryLayout,
+  typeGpuSelectionLayout,
+} from "../src/backends/typegpu-bindings.js";
 import { typeGpuCqMatvec, typeGpuQueryNormRope } from "../src/backends/typegpu-kernels.js";
 import { typeGpuParameterSchemas } from "../src/backends/typegpu-parameters.js";
 import { typeGpuArraySchema } from "../src/backends/typegpu-resources.js";
@@ -25,6 +31,22 @@ test("TypeGPU resident parameter schemas preserve WGSL byte layouts", () => {
     "output",
   ]);
   expect(typeGpuCqLayout.entries.output.access).toBe("mutable");
+  expect(Object.keys(typeGpuConfidencePoolLayout.entries)).toEqual([
+    "lanes",
+    "probes",
+    "maxima",
+    "denominators",
+    "weighted",
+  ]);
+  expect(typeGpuConfidencePoolLayout.entries.weighted.access).toBe("mutable");
+  expect(typeGpuConfidenceHeadLayout.entries.result.access).toBe("mutable");
+  expect(Object.keys(typeGpuSelectionLayout.entries)).toEqual([
+    "logits",
+    "allowed",
+    "params",
+    "result",
+  ]);
+  expect(typeGpuSelectionLayout.entries.result.access).toBe("mutable");
 
   const cqWgsl = tgpu.resolve([typeGpuCqMatvec]);
   expect(cqWgsl).toContain("needle_cq_packed_index");

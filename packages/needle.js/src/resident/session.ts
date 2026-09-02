@@ -297,8 +297,19 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     this.#finalHidden = f32("needle.attention.final-hidden", dimensionBytes);
     this.#preparedFinal = f32("needle.attention.prepared-final", dimensionBytes);
     this.#logits = f32("needle.attention.logits", geometry.vocabularySize * 4, COPY_SRC);
-    this.#confidence = new ResidentConfidence(device, weights);
-    this.#selector = new ResidentTokenSelector(device, this.#logits, geometry.vocabularySize);
+    this.#confidence = new ResidentConfidence(
+      device,
+      weights,
+      this.#resourceFactory,
+      this.#bindingFactory,
+    );
+    this.#selector = new ResidentTokenSelector(
+      device,
+      this.#logits,
+      geometry.vocabularySize,
+      this.#resourceFactory,
+      this.#bindingFactory,
+    );
     this.#staging = device.createBuffer({
       label: "needle.attention.readback",
       size: Math.max(lanesBytes, geometry.vocabularySize * 4),

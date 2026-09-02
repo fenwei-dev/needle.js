@@ -36,6 +36,38 @@ export const typeGpuCqLayout = tgpu
   .$idx(0)
   .$name("needle.resident.cq-layout");
 
+export const typeGpuConfidencePoolLayout = tgpu
+  .bindGroupLayout({
+    lanes: { storage: d.arrayOf(d.f32, 2048), access: "readonly", visibility: compute },
+    probes: { storage: d.arrayOf(d.f32, 4096), access: "readonly", visibility: compute },
+    maxima: { storage: d.arrayOf(d.f32, 8), access: "mutable", visibility: compute },
+    denominators: { storage: d.arrayOf(d.f32, 8), access: "mutable", visibility: compute },
+    weighted: { storage: d.arrayOf(d.f32, 4096), access: "mutable", visibility: compute },
+  })
+  .$idx(0)
+  .$name("needle.resident.confidence-pool-layout");
+
+export const typeGpuConfidenceHeadLayout = tgpu
+  .bindGroupLayout({
+    denominators: { storage: d.arrayOf(d.f32, 8), access: "readonly", visibility: compute },
+    weighted: { storage: d.arrayOf(d.f32, 4096), access: "readonly", visibility: compute },
+    projection: { storage: d.arrayOf(d.f32, 4096), access: "readonly", visibility: compute },
+    bias: { storage: d.arrayOf(d.f32, 1), access: "readonly", visibility: compute },
+    result: { storage: d.arrayOf(d.f32, 1), access: "mutable", visibility: compute },
+  })
+  .$idx(0)
+  .$name("needle.resident.confidence-head-layout");
+
+export const typeGpuSelectionLayout = tgpu
+  .bindGroupLayout({
+    logits: { storage: d.arrayOf(d.f32, 8192), access: "readonly", visibility: compute },
+    allowed: { storage: d.arrayOf(d.u32, 8192), access: "readonly", visibility: compute },
+    params: { storage: d.arrayOf(d.u32, 2), access: "readonly", visibility: compute },
+    result: { storage: d.arrayOf(d.u32, 2), access: "mutable", visibility: compute },
+  })
+  .$idx(0)
+  .$name("needle.resident.selection-layout");
+
 export const typeGpuQueryLayout = tgpu
   .bindGroupLayout({
     query: { storage: d.arrayOf(d.f32, 512), access: "mutable", visibility: compute },

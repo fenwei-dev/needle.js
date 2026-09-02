@@ -1,27 +1,36 @@
 import type { TgpuRoot } from "typegpu";
 import type {
   AttentionBindingResources,
+  ConfidenceHeadBindingResources,
+  ConfidencePoolBindingResources,
   CqBindingResources,
   KvBindingResources,
   QueryBindingResources,
   ResidentBindingFactory,
   ScoreBindingResources,
+  SelectionBindingResources,
 } from "../resident/bindings.js";
 import { typeGpuCqMatvec, typeGpuQueryNormRope } from "./typegpu-kernels.js";
 import {
   typeGpuAttentionLayout,
+  typeGpuConfidenceHeadLayout,
+  typeGpuConfidencePoolLayout,
   typeGpuCqLayout,
   typeGpuKvLayout,
   typeGpuQueryLayout,
   typeGpuScoresLayout,
+  typeGpuSelectionLayout,
 } from "./typegpu-layouts.js";
 
 export {
   typeGpuAttentionLayout,
+  typeGpuConfidenceHeadLayout,
+  typeGpuConfidencePoolLayout,
   typeGpuCqLayout,
   typeGpuKvLayout,
   typeGpuQueryLayout,
   typeGpuScoresLayout,
+  typeGpuSelectionLayout,
 } from "./typegpu-layouts.js";
 
 export function createTypeGpuBindingFactory(root: TgpuRoot): ResidentBindingFactory {
@@ -39,6 +48,9 @@ export function createTypeGpuBindingFactory(root: TgpuRoot): ResidentBindingFact
     kvLayout: root.unwrap(typeGpuKvLayout),
     scoresLayout: root.unwrap(typeGpuScoresLayout),
     attentionLayout: root.unwrap(typeGpuAttentionLayout),
+    confidencePoolLayout: root.unwrap(typeGpuConfidencePoolLayout),
+    confidenceHeadLayout: root.unwrap(typeGpuConfidenceHeadLayout),
+    selectionLayout: root.unwrap(typeGpuSelectionLayout),
     createCq(resources: CqBindingResources) {
       return root.unwrap(root.createBindGroup(typeGpuCqLayout, resources));
     },
@@ -53,6 +65,15 @@ export function createTypeGpuBindingFactory(root: TgpuRoot): ResidentBindingFact
     },
     createAttention(resources: AttentionBindingResources) {
       return root.unwrap(root.createBindGroup(typeGpuAttentionLayout, resources));
+    },
+    createConfidencePool(resources: ConfidencePoolBindingResources) {
+      return root.unwrap(root.createBindGroup(typeGpuConfidencePoolLayout, resources));
+    },
+    createConfidenceHead(resources: ConfidenceHeadBindingResources) {
+      return root.unwrap(root.createBindGroup(typeGpuConfidenceHeadLayout, resources));
+    },
+    createSelection(resources: SelectionBindingResources) {
+      return root.unwrap(root.createBindGroup(typeGpuSelectionLayout, resources));
     },
   };
 }

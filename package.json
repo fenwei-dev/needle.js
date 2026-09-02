@@ -16,6 +16,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "test": "bun run build:packages && bun run --cwd packages/needle.js test && bun run --cwd packages/needle-ai-provider test && bun run --cwd packages/needle-pi-ai-provider test && bun run --cwd apps/website test",
+    "test:package": "bun run --cwd packages/needle.js test:package",
     "typecheck": "bun run build:packages && bun run --cwd packages/needle.js typecheck && bun run --cwd packages/needle-ai-provider typecheck && bun run --cwd packages/needle-pi-ai-provider typecheck && bun run --cwd apps/website typecheck"
   },
   "devDependencies": {

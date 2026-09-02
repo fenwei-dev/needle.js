@@ -338,6 +338,7 @@ bun run build
 bun run bench
 NEEDLE_MODEL_PATH=/path/to/needle2.cact bun run test:browser
 NEEDLE_MODEL_PATH=/path/to/needle2.cact bun run test:corpus
+bun run test:package
 ```
 
 Run the parity integration test against an official archive:
@@ -347,6 +348,8 @@ NEEDLE_MODEL_PATH=/path/to/needle2.cact bun test tests/model.integration.test.ts
 ```
 
 The fixture checks the published 8,192-token/27-layer geometry and an exact constrained flashlight call.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the maintained TypeGPU/raw-WebGPU boundary and shader-build decision.
 
 The resident engine is library-neutral internally: `src/resident/session.ts` accepts a raw `GPUDevice`, while `resident/pipelines.ts`, `kernels.ts`, `engram.ts`, `confidence.ts`, `selection.ts`, `compatibility.ts`, and `webgpu.ts` own the execution core. `backends/typegpu.ts` is the thin public adapter responsible for TypeGPU device acquisition, lifecycle, and the adaptive operator fallback.
 

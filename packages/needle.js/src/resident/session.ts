@@ -984,23 +984,23 @@ export class WebGpuResidentSession implements FusedAttentionSession {
       this.#layerParams,
       ...this.#projectionParams,
     ]) {
-      buffer.destroy();
+      this.#destroyBuffer(buffer);
     }
-    for (const buffer of this.#residentSlotBuffers) buffer.destroy();
+    for (const buffer of this.#residentSlotBuffers) this.#destroyBuffer(buffer);
     for (const parameter of this.#residentSlotParameters) parameter.destroy();
     for (const matrix of this.#allocatedMatrices) {
-      matrix.packed.destroy();
-      matrix.norms.destroy();
+      this.#destroyBuffer(matrix.packed);
+      this.#destroyBuffer(matrix.norms);
     }
     for (const norms of this.#allocatedNorms) {
-      norms.query.destroy();
-      norms.key.destroy();
-      norms.input.destroy();
-      norms.postAttention.destroy();
-      norms.preHadamard.destroy();
-      norms.d1.destroy();
-      norms.d2.destroy();
-      norms.d3.destroy();
+      this.#destroyBuffer(norms.query);
+      this.#destroyBuffer(norms.key);
+      this.#destroyBuffer(norms.input);
+      this.#destroyBuffer(norms.postAttention);
+      this.#destroyBuffer(norms.preHadamard);
+      this.#destroyBuffer(norms.d1);
+      this.#destroyBuffer(norms.d2);
+      this.#destroyBuffer(norms.d3);
     }
   }
 
@@ -1008,7 +1008,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     if (this.#residentEngramGroups.length === this.#weights.engrams.length) {
       return this.#residentEngramGroups;
     }
-    for (const buffer of this.#residentEngramExtraBuffers) buffer.destroy();
+    for (const buffer of this.#residentEngramExtraBuffers) this.#destroyBuffer(buffer);
     this.#residentEngramExtraBuffers = [];
     this.#residentEngramGroups = [];
     for (let site = 0; site < this.#weights.engrams.length; site++) {
@@ -1101,7 +1101,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     ) {
       return this.#residentSlots;
     }
-    for (const buffer of this.#residentSlotBuffers) buffer.destroy();
+    for (const buffer of this.#residentSlotBuffers) this.#destroyBuffer(buffer);
     for (const parameter of this.#residentSlotParameters) parameter.destroy();
     this.#residentSlotBuffers = [];
     this.#residentSlotParameters = [];
@@ -1700,11 +1700,15 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     routingPass.end();
   }
 
+  #destroyBuffer(buffer: GPUBuffer | undefined): void {
+    if (buffer && !this.#resourceFactory.destroy(buffer)) buffer.destroy();
+  }
+
   #destroyCache(): void {
-    this.#keyCache?.destroy();
-    this.#valueCache?.destroy();
-    this.#keyScales?.destroy();
-    this.#valueScales?.destroy();
+    this.#destroyBuffer(this.#keyCache);
+    this.#destroyBuffer(this.#valueCache);
+    this.#destroyBuffer(this.#keyScales);
+    this.#destroyBuffer(this.#valueScales);
     this.#keyCache = undefined;
     this.#valueCache = undefined;
     this.#keyScales = undefined;

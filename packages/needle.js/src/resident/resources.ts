@@ -11,12 +11,23 @@ export interface ResidentResourceFactory {
     elementCount: number,
     extraUsage?: GPUBufferUsageFlags,
   ): GPUBuffer;
+  /** Returns true when this factory owned and released the buffer. */
+  destroy(buffer: GPUBuffer): boolean;
 }
 
 export function createRawResourceFactory(device: GPUDevice): ResidentResourceFactory {
+  const owned = new WeakSet<GPUBuffer>();
   return {
     create(_scalar, label, elementCount, extraUsage = 0) {
-      return storageBuffer(device, label, elementCount * 4, extraUsage);
+      const buffer = storageBuffer(device, label, elementCount * 4, extraUsage);
+      owned.add(buffer);
+      return buffer;
+    },
+    destroy(buffer) {
+      if (!owned.has(buffer)) return false;
+      owned.delete(buffer);
+      buffer.destroy();
+      return true;
     },
   };
 }

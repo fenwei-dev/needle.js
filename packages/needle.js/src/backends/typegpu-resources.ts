@@ -9,14 +9,24 @@ export function typeGpuArraySchema(scalar: ResidentScalar, elementCount: number)
 }
 
 export function createTypeGpuResourceFactory(root: TgpuRoot): ResidentResourceFactory {
+  const owned = new WeakMap<GPUBuffer, { destroy(): void }>();
   return {
     create(scalar, label, elementCount, extraUsage = 0) {
-      const buffer = root
+      const typed = root
         .createBuffer(typeGpuArraySchema(scalar, elementCount))
         .$usage("storage")
         .$addFlags(extraUsage)
         .$name(label);
-      return root.unwrap(buffer);
+      const buffer = root.unwrap(typed);
+      owned.set(buffer, typed);
+      return buffer;
+    },
+    destroy(buffer) {
+      const typed = owned.get(buffer);
+      if (!typed) return false;
+      owned.delete(buffer);
+      typed.destroy();
+      return true;
     },
   };
 }

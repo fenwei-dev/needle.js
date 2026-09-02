@@ -13,7 +13,8 @@ const modelSource = process.env.NEEDLE_MODEL_PATH ?? "download";
 process.stderr.write(`loading resident browser fixture (${modelSource})...\n`);
 const model = await loadWeights(modelSource, {
   onProgress: ({ loaded, total, cached }) => {
-    if (total) process.stderr.write(`\rmodel ${loaded}/${total}${cached ? " (cached)" : ""}`);
+    if (total && process.stderr.isTTY)
+      process.stderr.write(`\rmodel ${loaded}/${total}${cached ? " (cached)" : ""}`);
   },
 });
 process.stderr.write("\n");
@@ -54,7 +55,21 @@ const server = Bun.serve({
 const origin = `http://127.0.0.1:${server.port}`;
 const backend =
   process.env.RESIDENT_WEBVIEW_BACKEND ?? (process.platform === "darwin" ? "webkit" : "chrome");
-const view = new Bun.WebView({ width: 800, height: 600, backend: backend as "webkit" | "chrome" });
+const browserBackend =
+  backend === "chrome"
+    ? {
+        type: "chrome" as const,
+        url: false as const,
+        argv: [
+          "--disable-gpu=false",
+          "--enable-unsafe-webgpu",
+          "--enable-unsafe-swiftshader",
+          "--use-angle=swiftshader",
+          "--ignore-gpu-blocklist",
+        ],
+      }
+    : "webkit";
+const view = new Bun.WebView({ width: 800, height: 600, backend: browserBackend });
 try {
   await view.navigate(origin);
   await view.evaluate(`(() => new Promise((resolve, reject) => {
@@ -66,11 +81,23 @@ try {
     };
     poll();
   }))()`);
-  const result = await view.evaluate(
-    `window.runNeedleResidentSuite(${JSON.stringify(`${origin}/model.cact`)})`,
+  const hasAdapter = await view.evaluate(
+    "navigator.gpu?.requestAdapter().then((adapter) => Boolean(adapter)) ?? false",
   );
-  console.log(JSON.stringify(result, null, 2));
-  process.stderr.write("resident browser suite passed\n");
+  if (!hasAdapter && process.env.RESIDENT_ALLOW_NO_WEBGPU === "1") {
+    const message = `${backend} WebGPU adapter is unavailable; resident suite skipped`;
+    console.log(JSON.stringify({ skipped: true, backend, reason: message }, null, 2));
+    process.stderr.write(
+      process.env.GITHUB_ACTIONS === "true" ? `::warning::${message}\n` : `${message}\n`,
+    );
+  } else {
+    if (!hasAdapter) throw new Error(`${backend} WebGPU adapter is unavailable`);
+    const result = await view.evaluate(
+      `window.runNeedleResidentSuite(${JSON.stringify(`${origin}/model.cact`)})`,
+    );
+    console.log(JSON.stringify(result, null, 2));
+    process.stderr.write("resident browser suite passed\n");
+  }
 } finally {
   view.close();
   server.stop();

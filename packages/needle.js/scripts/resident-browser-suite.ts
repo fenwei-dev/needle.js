@@ -73,7 +73,10 @@ window.runNeedleResidentSuite = async (modelUrl) => {
       cpu.generate(prompt, { maxNewTokens: 16, temperature: 0 }),
       gpu.generate(prompt, { maxNewTokens: 16, temperature: 0 }),
     ]);
-    check(cpuGreedy.text === gpuGreedy.text, "resident greedy output differs from CPU");
+    check(
+      cpuGreedy.text === gpuGreedy.text,
+      `resident greedy output differs from CPU: ${JSON.stringify(cpuGreedy.text)} vs ${JSON.stringify(gpuGreedy.text)}`,
+    );
 
     const confidencePrompt = "Turn on the flashlight.";
     const promptConfidenceCpu = await confidence(cpu, confidencePrompt);

@@ -40,5 +40,7 @@ jobs:
       - name: Typecheck core package
         run: bun run --cwd packages/needle.js typecheck
 
-      - name: Run WebKit resident suite
+      - name: Run WebKit resident suite when the runner exposes WebGPU
+        env:
+          RESIDENT_ALLOW_NO_WEBGPU: "1"
         run: bun run --cwd packages/needle.js test:browser

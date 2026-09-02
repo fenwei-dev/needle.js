@@ -73,6 +73,7 @@ export async function createResidentPipelines(
   ] as const;
   const pipelines = await Promise.all(
     descriptors.map(async ([label, source, entryPoint]) => {
+      if (label === "query" && bindings.queryPipeline) return bindings.queryPipeline;
       const module = device.createShaderModule({
         label: `needle.resident.${label}.shader`,
         code: source,

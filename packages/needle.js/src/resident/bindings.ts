@@ -36,6 +36,7 @@ export interface AttentionBindingResources {
 
 export interface ResidentBindingFactory {
   readonly queryLayout?: GPUBindGroupLayout;
+  readonly queryPipeline?: GPUComputePipeline;
   readonly kvLayout?: GPUBindGroupLayout;
   readonly scoresLayout?: GPUBindGroupLayout;
   readonly attentionLayout?: GPUBindGroupLayout;

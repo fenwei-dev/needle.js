@@ -153,11 +153,13 @@ src/backends/typegpu-resources.ts
   # d.arrayOf schemas and root-owned resident state
 src/backends/typegpu-bindings.ts
   # typed query, KV-store, score, and softmax bind-group layouts
+src/backends/typegpu-kernels.ts
+  # TypeGPU compute functions and shader dependency composition
 ```
 
 `WebGpuResidentSession` depends only on `GPUDevice`, parsed model weights, and neutral resident options. TypeGPU is the supported public integration.
 
-Dynamic query, KV, and attention parameter blocks use TypeGPU `d.struct` schemas and root-owned typed storage buffers. Primary resident state—including lanes, QKV, attention/MLP intermediates, engram rings, logits, and int8-as-i32 KV storage—uses TypeGPU `d.arrayOf` schemas through a neutral resource factory. The adapter supplies them through `ResidentParameterFactory`; the resident core sees named values and raw buffers, not TypeGPU implementation types. A raw factory remains available as the portability/reference implementation. The query normalization/RoPE, KV-store, attention-score, and softmax/value-mixing passes use TypeGPU bind-group layouts and explicit pipeline layouts, while raw command encoding preserves the measured scheduling behavior. This recovers TypeGPU's compile-time layouts, typed writes, root ownership, and binding validation without coupling the execution graph or regressing throughput.
+Dynamic query, KV, and attention parameter blocks use TypeGPU `d.struct` schemas and root-owned typed storage buffers. Primary resident state—including lanes, QKV, attention/MLP intermediates, engram rings, logits, and int8-as-i32 KV storage—uses TypeGPU `d.arrayOf` schemas through a neutral resource factory. The adapter supplies them through `ResidentParameterFactory`; the resident core sees named values and raw buffers, not TypeGPU implementation types. A raw factory remains available as the portability/reference implementation. The query normalization/RoPE, KV-store, attention-score, and softmax/value-mixing passes use TypeGPU bind-group layouts and explicit pipeline layouts. Query normalization/RoPE is compiled as a TypeGPU `computeFn`; TypeGPU owns its workgroup variables, binding dependencies, generated declarations, and pipeline. The function body remains inline WGSL so the published library does not require consumers to configure `unplugin-typegpu`. Raw command encoding preserves the measured scheduling behavior. This recovers TypeGPU's compile-time layouts, typed writes, root ownership, and binding validation without coupling the execution graph or regressing throughput.
 
 ## Browser correctness suite
 

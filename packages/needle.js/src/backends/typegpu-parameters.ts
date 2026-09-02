@@ -24,6 +24,17 @@ const KvSchema = d.struct({
   reserved: d.u32,
 });
 
+const ProjectionSchema = d.struct({
+  outputCount: d.u32,
+  rowStart: d.u32,
+  inputPadded: d.u32,
+  groupSize: d.u32,
+  bits: d.u32,
+  rowBytes: d.u32,
+  groupCount: d.u32,
+  reserved: d.u32,
+});
+
 const AttentionSchema = d.struct({
   layer: d.u32,
   position: d.u32,
@@ -67,4 +78,5 @@ export const typeGpuParameterSchemas = {
   query: QuerySchema,
   kv: KvSchema,
   attention: AttentionSchema,
+  projection: ProjectionSchema,
 } as const;

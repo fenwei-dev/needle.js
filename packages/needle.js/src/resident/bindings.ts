@@ -1,5 +1,14 @@
 /// <reference types="@webgpu/types" preserve="true" />
 
+export interface CqBindingResources {
+  readonly packed: GPUBuffer;
+  readonly norms: GPUBuffer;
+  readonly input: GPUBuffer;
+  readonly codebook: GPUBuffer;
+  readonly params: GPUBuffer;
+  readonly output: GPUBuffer;
+}
+
 export interface QueryBindingResources {
   readonly query: GPUBuffer;
   readonly normScale: GPUBuffer;
@@ -35,11 +44,14 @@ export interface AttentionBindingResources {
 }
 
 export interface ResidentBindingFactory {
+  readonly cqLayout?: GPUBindGroupLayout;
+  readonly cqPipeline?: GPUComputePipeline;
   readonly queryLayout?: GPUBindGroupLayout;
   readonly queryPipeline?: GPUComputePipeline;
   readonly kvLayout?: GPUBindGroupLayout;
   readonly scoresLayout?: GPUBindGroupLayout;
   readonly attentionLayout?: GPUBindGroupLayout;
+  createCq?(resources: CqBindingResources): GPUBindGroup;
   createQuery?(resources: QueryBindingResources): GPUBindGroup;
   createKv?(resources: KvBindingResources): GPUBindGroup;
   createScores?(resources: ScoreBindingResources): GPUBindGroup;

@@ -4,6 +4,38 @@ import { typeGpuParameterSchemas } from "./typegpu-parameters.js";
 
 const compute: ["compute"] = ["compute"];
 
+export const typeGpuCqLayout = tgpu
+  .bindGroupLayout({
+    packed: {
+      storage: (n: number) => d.arrayOf(d.u32, n),
+      access: "readonly",
+      visibility: compute,
+    },
+    norms: {
+      storage: (n: number) => d.arrayOf(d.f32, n),
+      access: "readonly",
+      visibility: compute,
+    },
+    input: {
+      storage: (n: number) => d.arrayOf(d.f32, n),
+      access: "readonly",
+      visibility: compute,
+    },
+    codebook: { storage: d.arrayOf(d.f32, 28), access: "readonly", visibility: compute },
+    params: {
+      storage: typeGpuParameterSchemas.projection,
+      access: "readonly",
+      visibility: compute,
+    },
+    output: {
+      storage: (n: number) => d.arrayOf(d.f32, n),
+      access: "mutable",
+      visibility: compute,
+    },
+  })
+  .$idx(0)
+  .$name("needle.resident.cq-layout");
+
 export const typeGpuQueryLayout = tgpu
   .bindGroupLayout({
     query: { storage: d.arrayOf(d.f32, 512), access: "mutable", visibility: compute },

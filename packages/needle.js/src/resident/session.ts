@@ -1526,17 +1526,28 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     pipeline: GPUComputePipeline,
   ): GPUBindGroup {
     const gpuMatrix = this.#gpuMatrix(matrix);
-    return this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: gpuMatrix.packed } },
-        { binding: 1, resource: { buffer: gpuMatrix.norms } },
-        { binding: 2, resource: { buffer: input } },
-        { binding: 3, resource: { buffer: this.#codebook } },
-        { binding: 4, resource: { buffer: params } },
-        { binding: 5, resource: { buffer: output } },
-      ],
-    });
+    const resources = {
+      packed: gpuMatrix.packed,
+      norms: gpuMatrix.norms,
+      input,
+      codebook: this.#codebook,
+      params,
+      output,
+    };
+    return (
+      this.#bindingFactory.createCq?.(resources) ??
+      this.#device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: resources.packed } },
+          { binding: 1, resource: { buffer: resources.norms } },
+          { binding: 2, resource: { buffer: resources.input } },
+          { binding: 3, resource: { buffer: resources.codebook } },
+          { binding: 4, resource: { buffer: resources.params } },
+          { binding: 5, resource: { buffer: resources.output } },
+        ],
+      })
+    );
   }
 
   #encodeResidentFinal(encoder: GPUCommandEncoder, pipelines: Pipelines): void {
@@ -1742,18 +1753,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
   ): GPUBindGroup {
     const cached = this.#projectionGroups.get(matrix);
     if (cached) return cached;
-    const gpuMatrix = this.#gpuMatrix(matrix);
-    const group = this.#device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: gpuMatrix.packed } },
-        { binding: 1, resource: { buffer: gpuMatrix.norms } },
-        { binding: 2, resource: { buffer: input } },
-        { binding: 3, resource: { buffer: this.#codebook } },
-        { binding: 4, resource: { buffer: params } },
-        { binding: 5, resource: { buffer: output } },
-      ],
-    });
+    const group = this.#createProjectionGroup(matrix, input, params, output, pipeline);
     this.#projectionGroups.set(matrix, group);
     return group;
   }

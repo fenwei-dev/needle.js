@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" preserve="true" />
 
-import type { ResidentTokenSelection } from "../backends/backend.js";
+import type { SelectedToken } from "../backends/backend.js";
 import { invariant } from "../errors.js";
 import type { ResidentBindingFactory } from "./bindings.js";
 import type { ResidentPipelines } from "./pipelines.js";
@@ -44,7 +44,7 @@ export class ResidentTokenSelector {
   async select(
     pipeline: ResidentPipelines["selectToken"],
     allowedTokenIds?: Uint32Array,
-  ): Promise<ResidentTokenSelection> {
+  ): Promise<SelectedToken> {
     const count = allowedTokenIds?.length ?? this.#vocabularySize;
     invariant(
       count > 0 && count <= this.#vocabularySize,

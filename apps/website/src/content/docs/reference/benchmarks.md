@@ -31,7 +31,7 @@ The 8,192 × 512 vocabulary projection is large enough to benefit. Its CQ shader
 
 ## Diagnostic all-GPU matvec result
 
-Setting `minimumGpuRows: 0` forces all packed matvecs through WebGPU. This is useful for backend validation. The runtime batches projections that are independent at that point in the graph:
+Setting `diagnostics: { minimumGpuRows: 0 }` forces all packed matvecs through WebGPU. This is useful for backend validation. The runtime batches projections that are independent at that point in the graph:
 
 - the three mHC routing projections;
 - query, key, value, and gate;
@@ -47,13 +47,13 @@ These diagnostic medians use two warmups and three timed runs. Before batching, 
 
 ### Resident-attention experiment
 
-TypeGPU's opt-in `fusedAttention: true` keeps Q/K/V, int8 KV state, attention, gating, and output projection resident through one layer command buffer. It reduces the forced-all-GPU path from about 83 to about 56 host groups per model step and matched CPU greedy output on the benchmark prompts.
+TypeGPU's `diagnostics: { residentStage: "attention" }` keeps Q/K/V, int8 KV state, attention, gating, and output projection resident through one layer command buffer. It reduces the forced-all-GPU path from about 83 to about 56 host groups per model step and matched CPU greedy output on the benchmark prompts.
 
 For this short 13-token prompt, it measured about **17 tok/s**, below the 21 tok/s batched-matvec path: GPU softmax and cache kernels cost more than the readback they replace at this sequence length. It is therefore experimental rather than enabled by default. At a 98-token prompt it was approximately even with, and slightly ahead of, the non-resident all-GPU path.
 
-`fusedMlp: true` continues through sandwich normalization and the fixed Hadamard MLP, returning the layer delta. It measured about **15 tok/s** and matched the same greedy output.
+`residentStage: "mlp"` continues through sandwich normalization and the fixed Hadamard MLP, returning the layer delta. It measured about **15 tok/s** and matched the same greedy output.
 
-`fusedRouting: true` additionally performs h-post gating, 20 log-space Sinkhorn iterations, four-lane routing, and `nextX` construction on GPU. In isolation it measured about **10.6 tok/s**, because it transfers 2,048 lane values in both directions each layer.
+`residentStage: "routing"` additionally performs h-post gating, 20 log-space Sinkhorn iterations, four-lane routing, and `nextX` construction on GPU. In isolation it measured about **10.6 tok/s**, because it transfers 2,048 lane values in both directions each layer.
 
 `execution: "resident"` retains that `nextX` buffer for the next layer and adds GPU mHC pre-routing, h-pre reduction, engram injection, and input normalization. All 27 layers run without host readback. Final lane averaging, RMSNorm, activation preparation, and vocabulary projection also execute on GPU; non-logit prefill steps now read nothing after their layers.
 
@@ -66,7 +66,7 @@ The resident path matched CPU greedy text in both workloads. The canonical ten-r
 
 ### One submission per token experiment
 
-A token-level command builder assigns independent parameter buffers and bind groups to all 27 layers, allowing one `queue.submit()` after every layer has been encoded. Output remained identical, but WKWebView throughput fell from **52.5 tok/s** with immediate per-layer submissions to about **38.0 tok/s**. Immediate submission overlaps JavaScript command encoding with GPU execution; one delayed submission loses that overlap. The implementation remains available as `singleTokenSubmission: true` for cross-device diagnostics, but is not the default.
+A token-level command builder assigns independent parameter buffers and bind groups to all 27 layers, allowing one `queue.submit()` after every layer has been encoded. Output remained identical, but WKWebView throughput fell from **52.5 tok/s** with immediate per-layer submissions to about **38.0 tok/s**. Immediate submission overlaps JavaScript command encoding with GPU execution; one delayed submission loses that overlap. The implementation remains available as `diagnostics: { submission: "single" }` for cross-device diagnostics, but is not the default.
 
 ### Resident tool selection and confidence
 

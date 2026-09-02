@@ -1,4 +1,4 @@
-import { BOS_TOKEN_ID, Needle, NeedleModel, type ResidentTokenSelection } from "../src/index.js";
+import { BOS_TOKEN_ID, Needle, NeedleModel, type SelectedToken } from "../src/index.js";
 
 interface CorpusCase {
   readonly id: string;
@@ -55,7 +55,7 @@ async function selected(
   ids: readonly number[],
   sinkLength: number,
   runtimeOptions: { kvCache?: "int8" | "float32" } = {},
-): Promise<ResidentTokenSelection> {
+): Promise<SelectedToken> {
   const runtime = model.createRuntime({ collectConfidence: false, ...runtimeOptions });
   runtime.reset({ maximumLength: ids.length + 1, sinkLength });
   return runtime.prefillSelected(ids);

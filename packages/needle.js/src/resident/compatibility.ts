@@ -1,9 +1,9 @@
-import type { FusedAttentionResetOptions } from "../backends/backend.js";
+import type { ResidentExecutionResetOptions } from "../backends/backend.js";
 import type { CactWeights } from "../model/cact.js";
 
 export function supportsResidentExecution(
   weights: CactWeights,
-  options: FusedAttentionResetOptions,
+  options: ResidentExecutionResetOptions,
 ): boolean {
   const geometry = weights.geometry;
   return (

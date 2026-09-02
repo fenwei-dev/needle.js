@@ -1,16 +1,9 @@
 export type {
   BackendKind,
-  FusedAttentionRequest,
-  FusedAttentionResetOptions,
-  FusedAttentionResult,
-  FusedAttentionSession,
   InferenceBackend,
   MatrixRowRange,
   MatvecRequest,
-  ResidentEngramRequest,
-  ResidentLayerRequest,
-  ResidentTokenRequest,
-  ResidentTokenSelection,
+  SelectedToken,
 } from "./backends/backend.js";
 export { NeedleError, type NeedleErrorCode } from "./errors.js";
 export {

@@ -3,9 +3,12 @@ import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 const packageRoot = join(import.meta.dir, "..");
+const manifest = await Bun.file(join(packageRoot, "package.json")).json();
+if (typeof manifest.version !== "string") throw new Error("Package version is missing");
 const root = join(packageRoot, ".package-smoke");
 const consumer = join(root, "consumer");
-const tarball = join(root, "needle.js-0.1.0.tgz");
+const tarballName = `needle.js-${manifest.version}.tgz`;
+const tarball = join(root, tarballName);
 await rm(root, { recursive: true, force: true });
 await mkdir(consumer, { recursive: true });
 
@@ -21,6 +24,7 @@ async function run(command: string[], cwd = packageRoot): Promise<string> {
 }
 
 await run(["bun", "run", "build"]);
+await run(["bun", "run", "verify:package"]);
 await run(["bun", "pm", "pack", "--destination", root, "--ignore-scripts"]);
 const files = await run(["tar", "-tzf", tarball], root);
 for (const required of [
@@ -44,7 +48,7 @@ await Bun.write(
       private: true,
       type: "module",
       dependencies: {
-        "needle.js": "file:../needle.js-0.1.0.tgz",
+        "needle.js": `file:../${tarballName}`,
         typegpu: "0.12.4",
         typescript: "5.9.3",
       },

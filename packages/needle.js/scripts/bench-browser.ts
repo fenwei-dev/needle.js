@@ -48,6 +48,25 @@ async function measureBackend(
   options: BrowserBenchOptions,
 ): Promise<BackendResult> {
   const startedLoad = performance.now();
+  const residentStage = options.residentLayers
+    ? "layers"
+    : options.fusedRouting
+      ? "routing"
+      : options.fusedMlp
+        ? "mlp"
+        : options.fusedAttention
+          ? "attention"
+          : undefined;
+  const diagnostics =
+    options.minimumGpuRows !== undefined || residentStage || options.singleTokenSubmission
+      ? {
+          ...(options.minimumGpuRows === undefined
+            ? {}
+            : { minimumGpuRows: options.minimumGpuRows }),
+          ...(residentStage ? { residentStage } : {}),
+          ...(options.singleTokenSubmission ? { submission: "single" as const } : {}),
+        }
+      : undefined;
   let model: NeedleModel;
   try {
     model = await NeedleModel.load({
@@ -57,19 +76,8 @@ async function measureBackend(
         backend === "cpu"
           ? undefined
           : {
-              ...(options.minimumGpuRows === undefined
-                ? {}
-                : { minimumGpuRows: options.minimumGpuRows }),
-              ...(backend === "typegpu" && options.execution
-                ? { execution: options.execution }
-                : {}),
-              ...(backend === "typegpu" && options.fusedAttention ? { fusedAttention: true } : {}),
-              ...(backend === "typegpu" && options.fusedMlp ? { fusedMlp: true } : {}),
-              ...(backend === "typegpu" && options.fusedRouting ? { fusedRouting: true } : {}),
-              ...(backend === "typegpu" && options.residentLayers ? { residentLayers: true } : {}),
-              ...(backend === "typegpu" && options.singleTokenSubmission
-                ? { singleTokenSubmission: true }
-                : {}),
+              ...(options.execution ? { execution: options.execution } : {}),
+              ...(diagnostics ? { diagnostics } : {}),
             },
     });
   } catch (error) {

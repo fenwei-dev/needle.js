@@ -14,19 +14,19 @@ export interface MatvecRequest {
   readonly range?: MatrixRowRange;
 }
 
-export interface FusedAttentionResetOptions {
+export interface ResidentExecutionResetOptions {
   readonly maximumLength: number;
   readonly sinkLength: number;
   readonly kvCache: "int8" | "float32";
   readonly collectConfidence: boolean;
 }
 
-export interface FusedAttentionResult {
+export interface ResidentLayerFallbackResult {
   readonly kind: "projected" | "delta" | "nextX";
   readonly values: Float32Array;
 }
 
-export interface FusedAttentionRequest {
+export interface ResidentLayerFallbackRequest {
   readonly layer: CactLayer;
   readonly layerIndex: number;
   readonly position: number;
@@ -38,7 +38,7 @@ export interface FusedAttentionRequest {
   readonly phiResidual: Float32Array;
 }
 
-export interface ResidentTokenSelection {
+export interface SelectedToken {
   readonly id: number;
   readonly logProbability: number;
 }
@@ -63,16 +63,16 @@ export interface ResidentLayerRequest {
 }
 
 /** Stateful accelerator owned and disposed by its backend. */
-export interface FusedAttentionSession {
-  reset(options: FusedAttentionResetOptions): boolean;
-  forward(request: FusedAttentionRequest): Promise<FusedAttentionResult>;
+export interface ResidentExecutionSession {
+  reset(options: ResidentExecutionResetOptions): boolean;
+  forward(request: ResidentLayerFallbackRequest): Promise<ResidentLayerFallbackResult>;
   beginResidentToken?(lanes: Float32Array): Promise<boolean>;
   prepareResidentEngrams?(request: ResidentEngramRequest): Promise<boolean>;
   forwardResidentToken?(request: ResidentTokenRequest): Promise<void>;
   forwardResidentLayer?(request: ResidentLayerRequest): Promise<void>;
   finishResidentToken?(wantLogits: boolean): Promise<Float32Array | null>;
   finishResidentTokenForSelection?(): Promise<void>;
-  selectResidentToken?(allowedTokenIds?: Uint32Array): Promise<ResidentTokenSelection>;
+  selectResidentToken?(allowedTokenIds?: Uint32Array): Promise<SelectedToken>;
   residentLayersEnabled?(): boolean;
   residentConfidence?(): Promise<number | undefined>;
   readResidentLanes?(): Promise<Float32Array>;
@@ -101,7 +101,7 @@ export interface InferenceBackend {
   ): readonly Float32Array[] | Promise<readonly Float32Array[]>;
 
   /** Optional stateful Q/K/V, KV-cache, attention, gate, and output fusion. */
-  createFusedAttentionSession?(): FusedAttentionSession | undefined;
+  createResidentSession?(): ResidentExecutionSession | undefined;
 
   /** Dequantizes one row. Embedding and engram gathers use this operation. */
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array;

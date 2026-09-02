@@ -1,8 +1,8 @@
 import type {
-  FusedAttentionSession,
   InferenceBackend,
   MatvecRequest,
-  ResidentTokenSelection,
+  ResidentExecutionSession,
+  SelectedToken,
 } from "../backends/backend.js";
 import { denseMatvec } from "../backends/cq.js";
 import { invariant, NeedleError } from "../errors.js";
@@ -126,17 +126,17 @@ export class NeedleRuntime {
   #engramDepth = 0;
   #engramPosition = 0;
   #confidencePool: OnlineProbePool | undefined;
-  #fusedAttention: FusedAttentionSession | undefined;
-  #fusedAttentionEnabled = false;
+  #residentSession: ResidentExecutionSession | undefined;
+  #residentSessionEnabled = false;
   #usesResidentConfidence = false;
   #selectionRequest: Uint32Array | null | undefined;
-  #selectionResult: ResidentTokenSelection | undefined;
+  #selectionResult: SelectedToken | undefined;
 
   constructor(weights: CactWeights, backend: InferenceBackend, options: RuntimeOptions = {}) {
     this.weights = weights;
     this.backend = backend;
     this.options = options;
-    this.#fusedAttention = backend.createFusedAttentionSession?.();
+    this.#residentSession = backend.createResidentSession?.();
   }
 
   get position(): number {
@@ -168,14 +168,14 @@ export class NeedleRuntime {
       window > 0
         ? Math.min(options.maximumLength, this.#sinkLength + window)
         : options.maximumLength;
-    this.#fusedAttentionEnabled =
-      this.#fusedAttention?.reset({
+    this.#residentSessionEnabled =
+      this.#residentSession?.reset({
         maximumLength: options.maximumLength,
         sinkLength: this.#sinkLength,
         kvCache: this.options.kvCache ?? "int8",
         collectConfidence: this.options.collectConfidence !== false,
       }) ?? false;
-    if (this.#fusedAttentionEnabled) {
+    if (this.#residentSessionEnabled) {
       this.#keyCacheInt8 = undefined;
       this.#valueCacheInt8 = undefined;
       this.#keyCacheFloat = undefined;
@@ -215,8 +215,8 @@ export class NeedleRuntime {
     const confidence = this.weights.heads.get("confidence");
     this.#usesResidentConfidence = Boolean(
       this.options.collectConfidence !== false &&
-        this.#fusedAttention?.residentLayersEnabled?.() &&
-        this.#fusedAttention.residentConfidence,
+        this.#residentSession?.residentLayersEnabled?.() &&
+        this.#residentSession.residentConfidence,
     );
     this.#confidencePool =
       this.options.collectConfidence !== false && confidence && !this.#usesResidentConfidence
@@ -246,7 +246,7 @@ export class NeedleRuntime {
     tokens: readonly number[],
     allowedTokenIds?: Uint32Array,
     signal?: AbortSignal,
-  ): Promise<ResidentTokenSelection> {
+  ): Promise<SelectedToken> {
     invariant(tokens.length > 0, "INVALID_CACT", "Cannot prefill an empty token sequence");
     for (let index = 0; index + 1 < tokens.length; index++) {
       await this.step(tokens[index] ?? 0, { wantLogits: false, signal });
@@ -258,7 +258,7 @@ export class NeedleRuntime {
     token: number,
     allowedTokenIds?: Uint32Array,
     signal?: AbortSignal,
-  ): Promise<ResidentTokenSelection> {
+  ): Promise<SelectedToken> {
     invariant(
       this.#selectionRequest === undefined,
       "BACKEND_UNAVAILABLE",
@@ -313,8 +313,8 @@ export class NeedleRuntime {
     for (let lane = 0; lane < lanes; lane++) x.set(scaledEmbedding, lane * dimension);
     const engramLookup = this.#engramLookup();
     const residentEngrams =
-      engramLookup !== undefined && this.#fusedAttention?.prepareResidentEngrams
-        ? await this.#fusedAttention.prepareResidentEngrams({
+      engramLookup !== undefined && this.#residentSession?.prepareResidentEngrams
+        ? await this.#residentSession.prepareResidentEngrams({
             ...engramLookup,
             position: this.#engramPosition,
           })
@@ -324,17 +324,17 @@ export class NeedleRuntime {
       : await this.#engramStep(engramLookup);
     if (residentEngrams) this.#engramPosition++;
     const attentionWidth = geometry.numberOfHeads * geometry.headDimension;
-    const residentLayers = (await this.#fusedAttention?.beginResidentToken?.(x)) ?? false;
+    const residentLayers = (await this.#residentSession?.beginResidentToken?.(x)) ?? false;
     let residentLogits: Float32Array | null | undefined;
     const usingResidentLayers = Boolean(
       residentLayers &&
-        (this.#fusedAttention?.forwardResidentToken ||
-          this.#fusedAttention?.forwardResidentLayer) &&
-        this.#fusedAttention?.finishResidentToken,
+        (this.#residentSession?.forwardResidentToken ||
+          this.#residentSession?.forwardResidentLayer) &&
+        this.#residentSession?.finishResidentToken,
     );
 
-    if (usingResidentLayers && this.#fusedAttention?.finishResidentToken) {
-      if (this.#fusedAttention.forwardResidentToken) {
+    if (usingResidentLayers && this.#residentSession?.finishResidentToken) {
+      if (this.#residentSession.forwardResidentToken) {
         for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
           if (options.signal?.aborted)
             throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
@@ -342,8 +342,8 @@ export class NeedleRuntime {
             });
           this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
         }
-        await this.#fusedAttention.forwardResidentToken({ position, engramKeys, engramValues });
-      } else if (this.#fusedAttention.forwardResidentLayer) {
+        await this.#residentSession.forwardResidentToken({ position, engramKeys, engramValues });
+      } else if (this.#residentSession.forwardResidentLayer) {
         for (let layerIndex = 0; layerIndex < geometry.numberOfLayers; layerIndex++) {
           if (options.signal?.aborted)
             throw new NeedleError("GENERATION_ABORTED", "Needle generation was aborted", {
@@ -351,7 +351,7 @@ export class NeedleRuntime {
             });
           this.options.onLayer?.({ position, layer: layerIndex, layers: geometry.numberOfLayers });
           const engramSite = geometry.engramLayers.indexOf(layerIndex);
-          await this.#fusedAttention.forwardResidentLayer({
+          await this.#residentSession.forwardResidentLayer({
             layerIndex,
             position,
             ...(engramSite >= 0
@@ -362,13 +362,13 @@ export class NeedleRuntime {
       }
       if (
         this.#selectionRequest !== undefined &&
-        this.#fusedAttention.finishResidentTokenForSelection &&
-        this.#fusedAttention.selectResidentToken
+        this.#residentSession.finishResidentTokenForSelection &&
+        this.#residentSession.selectResidentToken
       ) {
-        await this.#fusedAttention.finishResidentTokenForSelection();
+        await this.#residentSession.finishResidentTokenForSelection();
         residentLogits = null;
       } else {
-        residentLogits = await this.#fusedAttention.finishResidentToken(
+        residentLogits = await this.#residentSession.finishResidentToken(
           options.wantLogits !== false,
         );
       }
@@ -441,8 +441,8 @@ export class NeedleRuntime {
         const attentionInput = rmsNorm(blockInput, layer.normInput);
         let delta: Float32Array | undefined;
         let fusedNextX: Float32Array | undefined;
-        if (this.#fusedAttentionEnabled && this.#fusedAttention) {
-          const fused = await this.#fusedAttention.forward({
+        if (this.#residentSessionEnabled && this.#residentSession) {
+          const residentResult = await this.#residentSession.forward({
             layer,
             layerIndex,
             position,
@@ -453,13 +453,13 @@ export class NeedleRuntime {
             phiPost,
             phiResidual,
           });
-          if (fused.kind === "nextX") {
-            fusedNextX = fused.values;
+          if (residentResult.kind === "nextX") {
+            fusedNextX = residentResult.values;
           } else {
             delta =
-              fused.kind === "delta"
-                ? fused.values
-                : this.#attentionDelta(fused.values, blockInput, updateInput, layer);
+              residentResult.kind === "delta"
+                ? residentResult.values
+                : this.#attentionDelta(residentResult.values, blockInput, updateInput, layer);
           }
         } else {
           const [query, key, value, gate] = await this.#matvecBatch([
@@ -555,9 +555,9 @@ export class NeedleRuntime {
     if (
       usingResidentLayers &&
       this.#selectionRequest !== undefined &&
-      this.#fusedAttention?.selectResidentToken
+      this.#residentSession?.selectResidentToken
     ) {
-      this.#selectionResult = await this.#fusedAttention.selectResidentToken(
+      this.#selectionResult = await this.#residentSession.selectResidentToken(
         this.#selectionRequest ?? undefined,
       );
       return null;
@@ -632,8 +632,8 @@ export class NeedleRuntime {
   }
 
   async resolveConfidence(): Promise<number | undefined> {
-    if (this.#usesResidentConfidence && this.#fusedAttention?.residentConfidence) {
-      return this.#fusedAttention.residentConfidence();
+    if (this.#usesResidentConfidence && this.#residentSession?.residentConfidence) {
+      return this.#residentSession.residentConfidence();
     }
     return this.confidence();
   }
@@ -877,10 +877,7 @@ export class NeedleRuntime {
   }
 }
 
-function selectToken(
-  logits: Float32Array,
-  allowedTokenIds: Uint32Array | null,
-): ResidentTokenSelection {
+function selectToken(logits: Float32Array, allowedTokenIds: Uint32Array | null): SelectedToken {
   if (!allowedTokenIds) {
     const id = argmax(logits);
     return { id, logProbability: logSoftmaxAt(logits, id) };

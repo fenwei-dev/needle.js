@@ -1,14 +1,14 @@
 /// <reference types="@webgpu/types" preserve="true" />
 
 import type {
-  FusedAttentionRequest,
-  FusedAttentionResetOptions,
-  FusedAttentionResult,
-  FusedAttentionSession,
   ResidentEngramRequest,
+  ResidentExecutionResetOptions,
+  ResidentExecutionSession,
+  ResidentLayerFallbackRequest,
+  ResidentLayerFallbackResult,
   ResidentLayerRequest,
   ResidentTokenRequest,
-  ResidentTokenSelection,
+  SelectedToken,
 } from "../backends/backend.js";
 import { prepareCqActivation } from "../backends/cq.js";
 import { matrixParameters, webGpuMatrixData } from "../backends/webgpu-kernel.js";
@@ -87,7 +87,7 @@ export interface WebGpuResidentOptions {
   readonly bindingFactory?: ResidentBindingFactory;
 }
 
-export class WebGpuResidentSession implements FusedAttentionSession {
+export class WebGpuResidentSession implements ResidentExecutionSession {
   readonly #device: GPUDevice;
   readonly #weights: CactWeights;
   readonly #fuseMlp: boolean;
@@ -266,7 +266,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     this.#pipelines = createResidentPipelines(device, this.#bindingFactory);
   }
 
-  reset(options: FusedAttentionResetOptions): boolean {
+  reset(options: ResidentExecutionResetOptions): boolean {
     invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "Fused attention was disposed");
     const geometry = this.#weights.geometry;
     this.#enabled = supportsResidentExecution(this.#weights, options);
@@ -599,7 +599,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     this.#device.queue.submit([encoder.finish()]);
   }
 
-  async selectResidentToken(allowedTokenIds?: Uint32Array): Promise<ResidentTokenSelection> {
+  async selectResidentToken(allowedTokenIds?: Uint32Array): Promise<SelectedToken> {
     invariant(
       this.#residentEnabled && !this.#disposed,
       "BACKEND_UNAVAILABLE",
@@ -632,7 +632,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     }
   }
 
-  async forward(request: FusedAttentionRequest): Promise<FusedAttentionResult> {
+  async forward(request: ResidentLayerFallbackRequest): Promise<ResidentLayerFallbackResult> {
     invariant(this.#enabled && !this.#disposed, "BACKEND_UNAVAILABLE", "Fused attention is off");
     const keyCache = this.#keyCache;
     const valueCache = this.#valueCache;
@@ -773,7 +773,7 @@ export class WebGpuResidentSession implements FusedAttentionSession {
     outputPass.end();
 
     let readback = this.#projected;
-    let kind: FusedAttentionResult["kind"] = "projected";
+    let kind: ResidentLayerFallbackResult["kind"] = "projected";
     if (this.#fuseMlp) {
       const sandwichPass = encoder.beginComputePass({ label: "needle.attention.sandwich" });
       sandwichPass.setPipeline(pipelines.sandwich);

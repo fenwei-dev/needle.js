@@ -20,5 +20,7 @@ export {
   createTypeGPUBackend,
   TypeGPUBackend,
   type TypeGPUBackendOptions,
+  type TypeGPUDiagnostics,
   type TypeGPUExecution,
+  type TypeGPUResidentStage,
 } from "./backends/typegpu.js";

@@ -49,6 +49,8 @@
     "test:browser": "bun run scripts/test-resident-browser.ts",
     "test:corpus": "bun run scripts/test-resident-browser.ts --corpus",
     "test:package": "bun run scripts/smoke-package.ts",
+    "verify:package": "bun run scripts/verify-package.ts",
+    "prepack": "bun run build && bun run verify:package",
     "embed:model": "bun run scripts/embed-model.ts"
   },
   "dependencies": {

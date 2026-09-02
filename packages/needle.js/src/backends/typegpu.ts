@@ -4,10 +4,10 @@ import { invariant, NeedleError } from "../errors.js";
 import type { CactWeights, CqMatrix } from "../model/cact.js";
 import { WebGpuResidentSession } from "../resident/session.js";
 import type {
-  FusedAttentionSession,
   InferenceBackend,
   MatrixRowRange,
   MatvecRequest,
+  ResidentExecutionSession,
 } from "./backend.js";
 import {
   cqMatvecPrepared,
@@ -61,6 +61,16 @@ interface BatchJob {
 }
 
 export type TypeGPUExecution = "adaptive" | "resident";
+export type TypeGPUResidentStage = "operators" | "attention" | "mlp" | "routing" | "layers";
+
+export interface TypeGPUDiagnostics {
+  /** Override the adaptive CPU/GPU row cutoff (default 1024). */
+  readonly minimumGpuRows?: number;
+  /** Stop resident execution at an intermediate development stage. */
+  readonly residentStage?: TypeGPUResidentStage;
+  /** Compare immediate layer streaming with one delayed token submission. */
+  readonly submission?: "streaming" | "single";
+}
 
 export interface TypeGPUBackendOptions {
   /** Stable execution policy. Resident mode automatically falls back when unsupported. */
@@ -71,21 +81,8 @@ export interface TypeGPUBackendOptions {
   readonly device?: GPUDevice;
   /** Forwarded to `tgpu.init` when neither root nor device is supplied. */
   readonly init?: Parameters<typeof tgpu.init>[0];
-  /**
-   * Small matvecs run on CPU because submission/readback costs dominate.
-   * Defaults to 1024 output rows. Set to 0 to force every matvec onto WebGPU.
-   */
-  readonly minimumGpuRows?: number;
-  /** @deprecated Diagnostic override; prefer `execution: "resident"`. */
-  readonly fusedAttention?: boolean;
-  /** @deprecated Diagnostic override; prefer `execution: "resident"`. */
-  readonly fusedMlp?: boolean;
-  /** @deprecated Diagnostic override; prefer `execution: "resident"`. */
-  readonly fusedRouting?: boolean;
-  /** @deprecated Diagnostic override; prefer `execution: "resident"`. */
-  readonly residentLayers?: boolean;
-  /** Encode all 27 resident layers before one queue submission (diagnostic). */
-  readonly singleTokenSubmission?: boolean;
+  /** Advanced benchmark and development controls. */
+  readonly diagnostics?: TypeGPUDiagnostics;
 }
 
 /** CQ matvec acceleration using a device initialized and owned through TypeGPU. */
@@ -109,12 +106,9 @@ export class TypeGPUBackend implements InferenceBackend {
   readonly #allocatedMatrices: GpuMatrix[] = [];
   readonly #allocatedBatchMatrices: GpuBatchMatrix[] = [];
   readonly #minimumGpuRows: number;
-  readonly #fusedAttentionEnabled: boolean;
-  readonly #fusedMlpEnabled: boolean;
-  readonly #fusedRoutingEnabled: boolean;
-  readonly #residentLayersEnabled: boolean;
-  readonly #singleTokenSubmission: boolean;
-  #fusedAttentionSession: WebGpuResidentSession | undefined;
+  readonly #residentStage: TypeGPUResidentStage;
+  readonly #submission: "streaming" | "single";
+  #residentSession: WebGpuResidentSession | undefined;
   #batchPipeline: GPUComputePipeline | undefined;
   #batchPipelinePromise: Promise<GPUComputePipeline> | undefined;
   #disposed = false;
@@ -127,11 +121,8 @@ export class TypeGPUBackend implements InferenceBackend {
     shaderModule: GPUShaderModule,
     minimumGpuRows: number,
     execution: TypeGPUExecution,
-    fusedAttention: boolean,
-    fusedMlp: boolean,
-    fusedRouting: boolean,
-    residentLayers: boolean,
-    singleTokenSubmission: boolean,
+    residentStage: TypeGPUResidentStage,
+    submission: "streaming" | "single",
   ) {
     this.root = root;
     this.device = root.device;
@@ -140,11 +131,8 @@ export class TypeGPUBackend implements InferenceBackend {
     this.#shaderModule = shaderModule;
     this.#minimumGpuRows = minimumGpuRows;
     this.execution = execution;
-    this.#fusedAttentionEnabled = fusedAttention;
-    this.#fusedMlpEnabled = fusedMlp;
-    this.#fusedRoutingEnabled = fusedRouting;
-    this.#residentLayersEnabled = residentLayers;
-    this.#singleTokenSubmission = singleTokenSubmission;
+    this.#residentStage = residentStage;
+    this.#submission = submission;
     const quantized = weights.tensors.filter((tensor): tensor is CqMatrix => tensor.kind === "cq");
     const maximumInput = Math.max(1, ...quantized.map((matrix) => matrix.inputSizePadded));
     const maximumOutput = Math.max(1, ...quantized.map((matrix) => matrix.outputSize));
@@ -194,20 +182,19 @@ export class TypeGPUBackend implements InferenceBackend {
         ? await root.device.createComputePipelineAsync(descriptor)
         : root.device.createComputePipeline(descriptor);
       const execution = options.execution ?? "adaptive";
-      const resident = execution === "resident" || options.residentLayers === true;
+      const diagnostics = options.diagnostics ?? {};
+      const residentStage =
+        diagnostics.residentStage ?? (execution === "resident" ? "layers" : "operators");
       return new TypeGPUBackend(
         weights,
         root,
         ownsRoot,
         pipeline,
         module,
-        normalizeMinimumGpuRows(options.minimumGpuRows),
+        normalizeMinimumGpuRows(diagnostics.minimumGpuRows),
         execution,
-        options.fusedAttention ?? options.fusedMlp ?? options.fusedRouting ?? resident,
-        options.fusedMlp ?? options.fusedRouting ?? resident,
-        options.fusedRouting ?? resident,
-        resident,
-        options.singleTokenSubmission ?? false,
+        residentStage,
+        diagnostics.submission ?? "streaming",
       );
     } catch (cause) {
       if (cause instanceof NeedleError) throw cause;
@@ -356,21 +343,26 @@ export class TypeGPUBackend implements InferenceBackend {
     return results;
   }
 
-  createFusedAttentionSession(): FusedAttentionSession | undefined {
+  createResidentSession(): ResidentExecutionSession | undefined {
     invariant(!this.#disposed, "BACKEND_UNAVAILABLE", "TypeGPU backend has been disposed");
-    if (!this.#fusedAttentionEnabled) return undefined;
-    if (!this.#fusedAttentionSession) {
-      this.#fusedAttentionSession = new WebGpuResidentSession(this.device, this.weights, {
-        fuseMlp: this.#fusedMlpEnabled,
-        fuseRouting: this.#fusedRoutingEnabled,
-        residentLayers: this.#residentLayersEnabled,
-        singleTokenSubmission: this.#singleTokenSubmission,
+    if (this.#residentStage === "operators") return undefined;
+    if (!this.#residentSession) {
+      const fuseMlp =
+        this.#residentStage === "mlp" ||
+        this.#residentStage === "routing" ||
+        this.#residentStage === "layers";
+      const fuseRouting = this.#residentStage === "routing" || this.#residentStage === "layers";
+      this.#residentSession = new WebGpuResidentSession(this.device, this.weights, {
+        fuseMlp,
+        fuseRouting,
+        residentLayers: this.#residentStage === "layers",
+        singleTokenSubmission: this.#submission === "single",
         parameterFactory: createTypeGpuParameterFactory(this.root),
         resourceFactory: createTypeGpuResourceFactory(this.root),
         bindingFactory: createTypeGpuBindingFactory(this.root),
       });
     }
-    return this.#fusedAttentionSession;
+    return this.#residentSession;
   }
 
   row(matrix: CqMatrix, row: number, output?: Float32Array): Float32Array {
@@ -385,7 +377,7 @@ export class TypeGPUBackend implements InferenceBackend {
       slot.output.destroy();
       slot.parameters.destroy();
     }
-    this.#fusedAttentionSession?.dispose();
+    this.#residentSession?.dispose();
     this.#codebook.destroy();
     this.#staging.destroy();
     for (const matrix of [...this.#allocatedMatrices, ...this.#allocatedBatchMatrices]) {

@@ -1,6 +1,6 @@
 # needle.js
 
-A TypeScript inference library for **Needle 2**, Cactus Compute's 45M-parameter tool-calling model. It reads the official self-contained `.cact` file directly and runs in Node.js, Bun, and modern browsers.
+A TypeScript inference library for **Needle 2**, Cactus Compute's 45M-parameter tool-calling model, with a pure TypeScript reference backend and a TypeGPU-resident WebGPU engine. It reads the official self-contained `.cact` file directly and runs in Node.js, Bun, and modern browsers.
 
 > **Unofficial implementation:** needle.js is an independent project and is not affiliated with or endorsed by Cactus Compute.
 
@@ -145,7 +145,7 @@ const agent = await createNeedleTypeGPU({
 });
 ```
 
-The backend acquires its device through `tgpu.init()` or adopts one through `tgpu.initFromDevice()`. `execution: "resident"` enables the complete compatible resident path and automatically falls back to adaptive operators for unsupported geometry or KV modes. Granular options such as `minimumGpuRows`, `fusedAttention`, `fusedMlp`, `fusedRouting`, `residentLayers`, and `singleTokenSubmission` remain available only for diagnostics.
+The backend acquires its device through `tgpu.init()` or adopts one through `tgpu.initFromDevice()`. `execution: "resident"` enables the complete compatible resident path and automatically falls back to adaptive operators for unsupported geometry or KV modes. Advanced controls are grouped under `diagnostics`, including `minimumGpuRows`, `residentStage`, and `submission`.
 
 You can also use the generic factory:
 
@@ -169,12 +169,12 @@ The WebGPU shader reduces each CQ row across a 32-lane workgroup. Independent mH
 ```bash
 bun run bench
 bun run bench -- --tokens 32 --warmup 1 --runs 2 --json
-bun run bench -- --minimum-gpu-rows 0 # diagnostic all-WebGPU matvec path
+bun run bench -- --minimum-gpu-rows 0 # CLI shorthand for a diagnostic override
 ```
 
 Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/). The canonical raw report is committed at [`benchmarks/2026-09-02-macos-m4-webkit.json`](https://github.com/fenwei-dev/needle.js/blob/main/packages/needle.js/benchmarks/2026-09-02-macos-m4-webkit.json).
 
-TypeGPU also has opt-in residency experiments. `fusedAttention` keeps Q/K/V, int8 KV state, attention, gating, and output projection on GPU; `fusedMlp` adds sandwich residuals and both 512-point Hadamard transforms; `fusedRouting` adds h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. The individual stages preserve greedy output but cost more than CPU while lane state still round-trips.
+TypeGPU diagnostics can stop residency at intermediate stages: `residentStage: "attention"` keeps Q/K/V, int8 KV state, attention, gating, and output projection on GPU; `"mlp"` adds sandwich residuals and both 512-point Hadamard transforms; `"routing"` adds h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. These stages preserve greedy output but cost more than CPU while lane state still round-trips.
 
 `execution: "resident"` removes that round trip. It retains all 2,048 lane values and performs mHC pre-projections/gating, engram table gather/dequantization and convolution, attention, MLP, post-routing, final RMSNorm, and vocabulary projection on GPU. JavaScript computes only the four tiny n-gram hashes and uploads their row IDs; engram keys and values never leave GPU memory. Non-logit prefill steps have no layer/final readback. Raw generation can read the vocabulary once; high-level tool calling instead uploads the grammar's allowed token IDs and reads only the selected ID plus log probability.
 

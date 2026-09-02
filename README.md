@@ -2,7 +2,7 @@
 
 [![Deploy website](https://github.com/fenwei-dev/needle.js/actions/workflows/deploy-website.yml/badge.svg)](https://github.com/fenwei-dev/needle.js/actions/workflows/deploy-website.yml)
 
-TypeScript tooling for running [Needle 2](https://github.com/cactus-compute/needle), integrating it with agent frameworks, and learning how its inference engine works.
+Needle 2 inference for TypeScript with a pure TypeScript reference backend, a TypeGPU-resident WebGPU engine, agent-framework integrations, and an educational implementation guide.
 
 > **Unofficial implementation:** This project is independent and is not affiliated with or endorsed by Cactus Compute.
 

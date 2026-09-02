@@ -1,0 +1,50 @@
+name: Validate package release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck workspaces
+        run: bun run typecheck
+
+      - name: Test workspaces
+        run: bun run test
+
+      - name: Build and verify package invariants
+        run: bun run --cwd packages/needle.js prepack
+
+      - name: Read package metadata
+        id: package
+        run: |
+          VERSION=$(bun -e 'console.log((await Bun.file("packages/needle.js/package.json").json()).version)')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tarball=packages/needle.js/.package-smoke/needle.js-$VERSION.tgz" >> "$GITHUB_OUTPUT"
+
+      - name: Test clean tarball consumer
+        run: bun run test:package
+
+      - name: Upload validated tarball
+        uses: actions/upload-artifact@v6
+        with:
+          name: needle.js-${{ steps.package.outputs.version }}-validated
+          path: ${{ steps.package.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7

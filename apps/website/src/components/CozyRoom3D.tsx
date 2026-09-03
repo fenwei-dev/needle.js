@@ -1,11 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-
-export interface RoomState {
-  readonly lightOn: boolean;
-  readonly curtainOpen: boolean;
-  readonly fanOn: boolean;
-  readonly fanSpeed: "low" | "medium" | "high";
-}
+import type { RoomState } from "./needle-demo-protocol";
 
 interface CozyRoom3DProps {
   readonly state: RoomState;

@@ -21,6 +21,10 @@ import NeedleDemo from '../../components/NeedleDemo.tsx';
 The first click downloads 13.7 MB and compiles the selected engine. **Resident WebGPU** is the default; if initialization fails, the demo reports the fallback and uses pure TypeScript. CPU prefill may take a few seconds, especially on mobile. Later examples reuse the same in-memory model and browser cache.
 :::
 
+:::note[Animation during WebGPU inference]
+Resident inference and the 3D room share the same physical GPU. The model runs in a dedicated worker, so the page remains responsive, but room animation may temporarily lose smoothness while WebGPU compute is active. Choose **Pure TypeScript** when animation smoothness matters more than inference speed.
+:::
+
 ## Choose the execution engine
 
 - **Resident WebGPU** keeps hidden lanes, KV cache, attention, engrams, confidence, and constrained token selection on the GPU. It requires browser WebGPU and TypeGPU.

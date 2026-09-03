@@ -1,10 +1,12 @@
-import type { NeedleModel } from "needle.js";
 import { useEffect, useRef, useState } from "preact/hooks";
-import CozyRoom3D, { type RoomState } from "./CozyRoom3D";
-
-type DemoBackend = "resident" | "cpu";
-type DemoMode = "raw" | "ai-sdk" | "pi-agent";
-type DeviceName = "ceiling_light" | "curtain" | "fan";
+import CozyRoom3D from "./CozyRoom3D";
+import type {
+  DemoBackend,
+  DemoMode,
+  RoomState,
+  WorkerEvent,
+  WorkerResultEvent,
+} from "./needle-demo-protocol";
 
 interface ChatMessage {
   readonly id: number;
@@ -12,15 +14,9 @@ interface ChatMessage {
   readonly text: string;
 }
 
-interface RoomController {
-  readonly state: RoomState;
-  update(patch: Partial<RoomState>): void;
-  action(message: string): void;
-}
-
-interface DemoResult {
-  readonly reply: string;
-  readonly raw: unknown;
+interface PendingRun {
+  resolve(event: WorkerResultEvent): void;
+  reject(error: Error): void;
 }
 
 const initialRoom: RoomState = {
@@ -94,80 +90,56 @@ export default function NeedleDemo() {
     },
   ]);
   const [running, setRunning] = useState(false);
-  const modelRef = useRef<NeedleModel>();
-  const loadedForRef = useRef<DemoBackend>();
-  const roomRef = useRef(room);
+  const [actualBackend, setActualBackend] = useState<string>();
+  const workerRef = useRef<Worker>();
+  const pendingRunsRef = useRef(new Map<number, PendingRun>());
   const chatMessagesRef = useRef<HTMLDivElement | null>(null);
   const messageIdRef = useRef(1);
-  roomRef.current = room;
+  const requestIdRef = useRef(0);
 
-  useEffect(
-    () => () => {
-      void modelRef.current?.dispose();
-    },
-    [],
-  );
+  useEffect(() => {
+    const worker = new Worker(new URL("./needle-demo.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    workerRef.current = worker;
+    worker.onmessage = ({ data }: MessageEvent<WorkerEvent>) => {
+      if (data.type === "status") {
+        setStatus(data.status);
+        if (data.backend) setActualBackend(data.backend);
+        return;
+      }
+      const pending = pendingRunsRef.current.get(data.id);
+      if (!pending) return;
+      pendingRunsRef.current.delete(data.id);
+      if (data.type === "result") pending.resolve(data);
+      else pending.reject(new Error(data.message));
+    };
+    worker.onerror = (event) => {
+      const error = new Error(event.message || "Inference worker failed");
+      for (const pending of pendingRunsRef.current.values()) pending.reject(error);
+      pendingRunsRef.current.clear();
+    };
+    return () => {
+      worker.postMessage({ type: "dispose" });
+      worker.terminate();
+      for (const pending of pendingRunsRef.current.values())
+        pending.reject(new Error("Inference worker was disposed"));
+      pendingRunsRef.current.clear();
+      workerRef.current = undefined;
+    };
+  }, []);
 
   useEffect(() => {
     const messageList = chatMessagesRef.current;
     if (messageList) messageList.scrollTop = messageList.scrollHeight;
   }, [messages, running]);
 
-  async function selectBackend(next: DemoBackend) {
+  function selectBackend(next: DemoBackend) {
     if (next === backend) return;
-    const previous = modelRef.current;
-    modelRef.current = undefined;
-    loadedForRef.current = undefined;
+    workerRef.current?.postMessage({ type: "dispose" });
     setBackend(next);
+    setActualBackend(undefined);
     setStatus("Model not loaded");
-    if (previous) await previous.dispose();
-  }
-
-  async function loadModel(): Promise<NeedleModel> {
-    if (modelRef.current && loadedForRef.current === backend) return modelRef.current;
-    const { NeedleModel } = await import("needle.js");
-    setStatus("Preparing 13.7 MB model…");
-    const progress = ({
-      loaded,
-      total,
-      cached,
-    }: {
-      loaded: number;
-      total?: number;
-      cached: boolean;
-    }) => {
-      const percentage = total ? ` ${Math.round((loaded / total) * 100)}%` : "";
-      setStatus(cached ? "Loading cached model…" : `Downloading model…${percentage}`);
-    };
-    let model: NeedleModel;
-    let fallback = false;
-    if (backend === "resident") {
-      try {
-        model = await NeedleModel.load({
-          weights: "download",
-          backend: "typegpu",
-          backendOptions: { execution: "resident" },
-          onProgress: progress,
-        });
-      } catch (error) {
-        fallback = true;
-        setStatus("WebGPU unavailable · loading CPU fallback…");
-        console.warn("needle.js resident WebGPU unavailable; using CPU", error);
-        model = await NeedleModel.load({
-          weights: "download",
-          backend: "cpu",
-          onProgress: progress,
-        });
-      }
-    } else {
-      model = await NeedleModel.load({ weights: "download", backend: "cpu", onProgress: progress });
-    }
-    modelRef.current = model;
-    loadedForRef.current = backend;
-    setStatus(
-      `Ready · ${model.backend.name}${fallback ? " · fallback" : backend === "resident" ? " · resident" : ""}`,
-    );
-    return model;
   }
 
   function addMessage(role: ChatMessage["role"], text: string) {
@@ -180,41 +152,29 @@ export default function NeedleDemo() {
     addMessage("user", text);
     setPrompt("");
     setRunning(true);
-    const actions: string[] = [];
-    const controller: RoomController = {
-      get state() {
-        return roomRef.current;
-      },
-      update(patch) {
-        const next = { ...roomRef.current, ...patch };
-        roomRef.current = next;
-        setRoom(next);
-      },
-      action(message) {
-        actions.push(message);
-      },
-    };
     try {
-      const model = await loadModel();
-      const started = performance.now();
-      const result =
-        mode === "raw"
-          ? await runRaw(model, text, controller)
-          : mode === "ai-sdk"
-            ? await runAiSdk(model, text, controller)
-            : await runPiAgent(model, text, controller);
-      const elapsedMs = performance.now() - started;
+      const worker = workerRef.current;
+      if (!worker) throw new Error("Inference worker is not ready");
+      const id = ++requestIdRef.current;
+      const result = await new Promise<WorkerResultEvent>((resolve, reject) => {
+        pendingRunsRef.current.set(id, { resolve, reject });
+        worker.postMessage({ type: "run", id, mode, backend, prompt: text, room });
+      });
+      setRoom(result.room);
+      setActualBackend(result.backend);
       addMessage(
         "assistant",
-        actions.length > 0 ? actions.join(" ") : result.reply || "Done — the room is up to date.",
+        result.actions.length > 0
+          ? result.actions.join(" ")
+          : result.reply || "Done — the room is up to date.",
       );
       setRawOutput(
         JSON.stringify(
           {
             sdk: modeLabels[mode],
-            backend: model.backend.name,
-            elapsedMs: Math.round(elapsedMs),
-            room: roomRef.current,
+            backend: result.backend,
+            elapsedMs: Math.round(result.elapsedMs),
+            room: result.room,
             response: result.raw,
           },
           null,
@@ -274,7 +234,7 @@ export default function NeedleDemo() {
               <strong class="block text-[0.78rem] tracking-[-0.01em]">Momo Home</strong>
               <span class="mt-px block text-[0.56rem] leading-tight text-[#837487]">
                 <i
-                  class={`room-online-dot mr-1 inline-block size-[0.35rem] rounded-full ${modelRef.current ? "is-ready bg-[#6ab281]" : "bg-[#b2a8b5]"}`}
+                  class={`room-online-dot mr-1 inline-block size-[0.35rem] rounded-full ${actualBackend ? "is-ready bg-[#6ab281]" : "bg-[#b2a8b5]"}`}
                 />{" "}
                 {status}
               </span>
@@ -369,7 +329,7 @@ export default function NeedleDemo() {
             </strong>
           </div>
           <code class="text-[0.68rem] text-[var(--sl-color-accent-high)]">
-            {modelRef.current?.backend.name ?? "Not initialized"}
+            {actualBackend ?? "Not initialized"}
           </code>
         </div>
         <div class="demo-config-grid grid grid-cols-2 gap-4 p-4 max-md:grid-cols-1">
@@ -378,7 +338,7 @@ export default function NeedleDemo() {
               <ConfigButton
                 active={backend === item}
                 disabled={running}
-                onClick={() => void selectBackend(item)}
+                onClick={() => selectBackend(item)}
               >
                 {backendLabels[item]}
               </ConfigButton>
@@ -487,294 +447,4 @@ function ConfigButton({
 
 function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function describeStatus(state: RoomState) {
-  return `The ceiling light is ${state.lightOn ? "on" : "off"}, the curtains are ${state.curtainOpen ? "open" : "closed"}, and the fan is ${state.fanOn ? `on at ${state.fanSpeed} speed` : "off"}.`;
-}
-
-function deviceStatus(state: RoomState, device: DeviceName) {
-  if (device === "ceiling_light") return { device, on: state.lightOn };
-  if (device === "curtain") return { device, open: state.curtainOpen };
-  return { device, on: state.fanOn, speed: state.fanSpeed };
-}
-
-async function runRaw(
-  model: NeedleModel,
-  prompt: string,
-  room: RoomController,
-): Promise<DemoResult> {
-  const { Needle, defineTool } = await import("needle.js");
-  const getStatus = defineTool<{ device?: DeviceName }, unknown>({
-    name: "get_device_status",
-    description:
-      "Get current status of the ceiling light, electric curtain, fan, or all room devices",
-    parameters: {
-      type: "object",
-      properties: {
-        device: { type: "string", enum: ["ceiling_light", "curtain", "fan"] },
-      },
-    },
-    execute: ({ device }) => {
-      const result = device ? deviceStatus(room.state, device) : room.state;
-      room.action(
-        device ? `${capitalize(device.replace("_", " "))} checked.` : describeStatus(room.state),
-      );
-      return result;
-    },
-  });
-  const setLight = defineTool<{ on: boolean }, { on: boolean }>({
-    name: "set_ceiling_light",
-    description: "Turn the bedroom ceiling light on or off",
-    parameters: {
-      type: "object",
-      properties: { on: { type: "boolean" } },
-      required: ["on"],
-    },
-    execute: ({ on }) => {
-      room.update({ lightOn: on });
-      room.action(`Ceiling light turned ${on ? "on" : "off"}.`);
-      return { on };
-    },
-  });
-  const setCurtain = defineTool<{ open: boolean }, { open: boolean }>({
-    name: "set_curtain",
-    description: "Open or close the electric bedroom curtains",
-    parameters: {
-      type: "object",
-      properties: { open: { type: "boolean" } },
-      required: ["open"],
-    },
-    execute: ({ open }) => {
-      room.update({ curtainOpen: open });
-      room.action(`Curtains ${open ? "opened" : "closed"}.`);
-      return { open };
-    },
-  });
-  const setFan = defineTool<
-    { on: boolean; speed?: RoomState["fanSpeed"] },
-    { on: boolean; speed: RoomState["fanSpeed"] }
-  >({
-    name: "set_fan",
-    description: "Turn the electric fan on or off and optionally set low, medium, or high speed",
-    parameters: {
-      type: "object",
-      properties: {
-        on: { type: "boolean" },
-        speed: { type: "string", enum: ["low", "medium", "high"] },
-      },
-      required: ["on"],
-    },
-    execute: ({ on, speed = room.state.fanSpeed }) => {
-      room.update({ fanOn: on, fanSpeed: speed });
-      room.action(`Fan turned ${on ? `on at ${speed} speed` : "off"}.`);
-      return { on, speed };
-    },
-  });
-  const agent = new Needle(model, { tools: [getStatus, setLight, setCurtain, setFan] });
-  const response = await agent.run(prompt, { maxSteps: 4 });
-  return {
-    reply: response.reasoning,
-    raw: {
-      calls: response.functionCalls,
-      results: response.results,
-      confidence: response.confidence,
-      metrics: response.metrics,
-    },
-  };
-}
-
-async function runAiSdk(
-  model: NeedleModel,
-  prompt: string,
-  room: RoomController,
-): Promise<DemoResult> {
-  const [{ generateText, jsonSchema, stepCountIs, tool }, { createNeedleProvider }] =
-    await Promise.all([import("ai"), import("needle-ai-provider")]);
-  const provider = createNeedleProvider({ model, disposeModel: false });
-  const result = await generateText({
-    model: provider(),
-    prompt,
-    stopWhen: stepCountIs(4),
-    tools: {
-      get_device_status: tool({
-        description: "Get the status of one smart-bedroom device or the whole room",
-        inputSchema: jsonSchema<{ device?: DeviceName }>({
-          type: "object",
-          properties: { device: { type: "string", enum: ["ceiling_light", "curtain", "fan"] } },
-          additionalProperties: false,
-        }),
-        execute: async ({ device }) => {
-          room.action(
-            device
-              ? `${capitalize(device.replace("_", " "))} checked.`
-              : describeStatus(room.state),
-          );
-          return device ? deviceStatus(room.state, device) : room.state;
-        },
-      }),
-      set_ceiling_light: tool({
-        description: "Turn the bedroom ceiling light on or off",
-        inputSchema: jsonSchema<{ on: boolean }>({
-          type: "object",
-          properties: { on: { type: "boolean" } },
-          required: ["on"],
-          additionalProperties: false,
-        }),
-        execute: async ({ on }) => {
-          room.update({ lightOn: on });
-          room.action(`Ceiling light turned ${on ? "on" : "off"}.`);
-          return { on };
-        },
-      }),
-      set_curtain: tool({
-        description: "Open or close the electric bedroom curtains",
-        inputSchema: jsonSchema<{ open: boolean }>({
-          type: "object",
-          properties: { open: { type: "boolean" } },
-          required: ["open"],
-          additionalProperties: false,
-        }),
-        execute: async ({ open }) => {
-          room.update({ curtainOpen: open });
-          room.action(`Curtains ${open ? "opened" : "closed"}.`);
-          return { open };
-        },
-      }),
-      set_fan: tool({
-        description: "Turn the electric fan on or off and set its speed",
-        inputSchema: jsonSchema<{ on: boolean; speed?: RoomState["fanSpeed"] }>({
-          type: "object",
-          properties: {
-            on: { type: "boolean" },
-            speed: { type: "string", enum: ["low", "medium", "high"] },
-          },
-          required: ["on"],
-          additionalProperties: false,
-        }),
-        execute: async ({ on, speed = room.state.fanSpeed }) => {
-          room.update({ fanOn: on, fanSpeed: speed });
-          room.action(`Fan turned ${on ? `on at ${speed} speed` : "off"}.`);
-          return { on, speed };
-        },
-      }),
-    },
-  });
-  await provider.dispose();
-  return {
-    reply: result.text,
-    raw: {
-      text: result.text,
-      calls: result.toolCalls,
-      results: result.toolResults,
-      steps: result.steps.length,
-    },
-  };
-}
-
-async function runPiAgent(
-  model: NeedleModel,
-  prompt: string,
-  room: RoomController,
-): Promise<DemoResult> {
-  const [{ Agent }, piAi, { createNeedlePiProvider }] = await Promise.all([
-    import("@earendil-works/pi-agent-core"),
-    import("@earendil-works/pi-ai"),
-    import("needle-pi-ai-provider"),
-  ]);
-  const provider = createNeedlePiProvider({ model, disposeModel: false });
-  const models = piAi.createModels();
-  models.setProvider(provider);
-  const piModel = models.getModel("needle", "needle-2");
-  if (!piModel) throw new Error("Needle pi model was not registered");
-
-  const events: string[] = [];
-  const textResult = (value: unknown) => ({
-    content: [{ type: "text" as const, text: JSON.stringify(value) }],
-    details: {},
-  });
-  const agent = new Agent({
-    initialState: {
-      systemPrompt: "Control the cozy bedroom with the available local tools.",
-      model: piModel,
-      thinkingLevel: "off",
-      tools: [
-        {
-          name: "get_device_status",
-          label: "Check room device",
-          description: "Get the current status of all smart-bedroom devices",
-          parameters: piAi.Type.Object({}),
-          execute: async () => {
-            room.action(describeStatus(room.state));
-            return textResult(room.state);
-          },
-        },
-        {
-          name: "set_ceiling_light",
-          label: "Set ceiling light",
-          description: "Turn the bedroom ceiling light on or off",
-          parameters: piAi.Type.Object({ on: piAi.Type.Boolean() }),
-          execute: async (_id, params: unknown) => {
-            const { on } = params as { on: boolean };
-            room.update({ lightOn: on });
-            room.action(`Ceiling light turned ${on ? "on" : "off"}.`);
-            return textResult({ on });
-          },
-        },
-        {
-          name: "set_curtain",
-          label: "Set electric curtain",
-          description: "Open or close the electric bedroom curtains",
-          parameters: piAi.Type.Object({ open: piAi.Type.Boolean() }),
-          execute: async (_id, params: unknown) => {
-            const { open } = params as { open: boolean };
-            room.update({ curtainOpen: open });
-            room.action(`Curtains ${open ? "opened" : "closed"}.`);
-            return textResult({ open });
-          },
-        },
-        {
-          name: "set_fan",
-          label: "Set electric fan",
-          description: "Turn the fan on or off and set low, medium, or high speed",
-          parameters: piAi.Type.Object({
-            on: piAi.Type.Boolean(),
-            speed: piAi.Type.Optional(
-              piAi.Type.Union([
-                piAi.Type.Literal("low"),
-                piAi.Type.Literal("medium"),
-                piAi.Type.Literal("high"),
-              ]),
-            ),
-          }),
-          execute: async (_id, params: unknown) => {
-            const args = params as { on: boolean; speed?: RoomState["fanSpeed"] };
-            const speed = args.speed ?? room.state.fanSpeed;
-            room.update({ fanOn: args.on, fanSpeed: speed });
-            room.action(`Fan turned ${args.on ? `on at ${speed} speed` : "off"}.`);
-            return textResult({ on: args.on, speed });
-          },
-        },
-      ],
-    },
-    streamFn: models.streamSimple.bind(models),
-  });
-
-  agent.subscribe((event) => {
-    if (event.type === "tool_execution_start") events.push(`tool:start ${event.toolName}`);
-    if (event.type === "tool_execution_end") events.push(`tool:end ${event.toolName}`);
-  });
-  await agent.prompt(prompt);
-  await provider.dispose();
-  const lastMessage = agent.state.messages.at(-1);
-  return {
-    reply: lastMessage && "content" in lastMessage ? JSON.stringify(lastMessage.content) : "",
-    raw: {
-      events,
-      messages: agent.state.messages.map((message) => ({
-        role: message.role,
-        content: "content" in message ? message.content : undefined,
-      })),
-    },
-  };
 }

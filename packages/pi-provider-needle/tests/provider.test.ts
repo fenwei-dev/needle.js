@@ -64,7 +64,7 @@ const baseContext: Context = {
   tools: [weatherTool],
 };
 
-describe("needle-pi-ai-provider", () => {
+describe("pi-provider-needle", () => {
   test("registers a keyless local model in a Models collection", async () => {
     const provider = createNeedlePiProvider({ model: fakeModel() });
     const models = createModels();

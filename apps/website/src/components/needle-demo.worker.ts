@@ -318,7 +318,7 @@ async function runPiAgent(
   const [{ Agent }, piAi, { createNeedlePiProvider }] = await Promise.all([
     import("@earendil-works/pi-agent-core"),
     import("@earendil-works/pi-ai"),
-    import("needle-pi-ai-provider"),
+    import("pi-provider-needle"),
   ]);
   const provider = createNeedlePiProvider({
     model,

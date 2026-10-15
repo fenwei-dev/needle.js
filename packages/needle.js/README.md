@@ -172,7 +172,7 @@ bun run bench -- --tokens 32 --warmup 1 --runs 2 --json
 bun run bench -- --minimum-gpu-rows 0 # CLI shorthand for a diagnostic override
 ```
 
-Methodology and notes: [backend benchmarks](https://fenwei-dev.github.io/needle.js/reference/benchmarks/). The canonical raw report is committed at [`benchmarks/2026-09-02-macos-m4-webkit.json`](https://github.com/fenwei-dev/needle.js/blob/main/packages/needle.js/benchmarks/2026-09-02-macos-m4-webkit.json).
+Methodology and notes: [backend benchmarks](https://needle.fenwei.dev/reference/benchmarks/). The canonical raw report is committed at [`benchmarks/2026-09-02-macos-m4-webkit.json`](https://github.com/fenwei-dev/needle.js/blob/main/packages/needle.js/benchmarks/2026-09-02-macos-m4-webkit.json).
 
 TypeGPU diagnostics can stop residency at intermediate stages: `residentStage: "attention"` keeps Q/K/V, int8 KV state, attention, gating, and output projection on GPU; `"mlp"` adds sandwich residuals and both 512-point Hadamard transforms; `"routing"` adds h-post gates, 20-step 4×4 Sinkhorn routing, and four-lane `nextX` construction. These stages preserve greedy output but cost more than CPU while lane state still round-trips.
 

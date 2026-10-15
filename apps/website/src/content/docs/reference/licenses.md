@@ -13,7 +13,7 @@ All TypeScript source code and original documentation in the needle.js monorepo 
 | --- | --- |
 | `needle.js` core runtime | MIT |
 | `needle-ai-provider` | MIT |
-| `needle-pi-ai-provider` | MIT |
+| `pi-provider-needle` | MIT |
 | Website application and documentation | MIT |
 
 ## Upstream Needle reference
@@ -22,7 +22,7 @@ The public Needle 2 repository and model specification were consulted for intero
 
 - Repository: [Cactus Compute/needle](https://github.com/cactus-compute/needle)
 - Inspected revision: `ee221ce7c13579d9809209b979a9b7a50936614c`
-- Upstream license: [Apache License 2.0](/needle.js/licenses/Apache-2.0.txt)
+- Upstream license: [Apache License 2.0](/licenses/Apache-2.0.txt)
 
 The upstream license does not replace the MIT license used for the independent TypeScript implementation.
 
@@ -38,5 +38,5 @@ The model weights are Apache-2.0 licensed. Applications that redistribute an emb
 
 ## Complete notices
 
-- [Monorepo NOTICE](/needle.js/licenses/NOTICE.txt)
-- [Apache License 2.0](/needle.js/licenses/Apache-2.0.txt)
+- [Monorepo NOTICE](/licenses/NOTICE.txt)
+- [Apache License 2.0](/licenses/Apache-2.0.txt)

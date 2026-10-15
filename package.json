@@ -9,15 +9,15 @@
   ],
   "scripts": {
     "build": "bun run build:packages && bun run --cwd apps/website build",
-    "build:packages": "bun run --cwd packages/needle.js build && bun run --cwd packages/needle-ai-provider build && bun run --cwd packages/needle-pi-ai-provider build",
+    "build:packages": "bun run --cwd packages/needle.js build && bun run --cwd packages/needle-ai-provider build && bun run --cwd packages/pi-provider-needle build",
     "check": "biome check .",
     "clean": "bun run --filter '*' clean",
     "dev": "bun run build:packages && bun run --cwd apps/website dev",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "test": "bun run build:packages && bun run --cwd packages/needle.js test && bun run --cwd packages/needle-ai-provider test && bun run --cwd packages/needle-pi-ai-provider test && bun run --cwd apps/website test",
+    "test": "bun run build:packages && bun run --cwd packages/needle.js test && bun run --cwd packages/needle-ai-provider test && bun run --cwd packages/pi-provider-needle test && bun run --cwd apps/website test",
     "test:package": "bun run --cwd packages/needle.js test:package",
-    "typecheck": "bun run build:packages && bun run --cwd packages/needle.js typecheck && bun run --cwd packages/needle-ai-provider typecheck && bun run --cwd packages/needle-pi-ai-provider typecheck && bun run --cwd apps/website typecheck"
+    "typecheck": "bun run build:packages && bun run --cwd packages/needle.js typecheck && bun run --cwd packages/needle-ai-provider typecheck && bun run --cwd packages/pi-provider-needle typecheck && bun run --cwd apps/website typecheck"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.11"

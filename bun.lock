@@ -21,8 +21,8 @@
         "ai": "^7.0.85",
         "astro": "^7.2.9",
         "needle-ai-provider": "workspace:*",
-        "needle-pi-ai-provider": "workspace:*",
         "needle.js": "workspace:*",
+        "pi-provider-needle": "workspace:*",
         "preact": "^10.28.2",
         "sharp": "^0.35.3",
         "tailwindcss": "^4.3.3",
@@ -53,23 +53,6 @@
         "needle.js": ">=0.1.0",
       },
     },
-    "packages/needle-pi-ai-provider": {
-      "name": "needle-pi-ai-provider",
-      "version": "0.1.0",
-      "dependencies": {
-        "needle.js": "^0.1.0",
-      },
-      "devDependencies": {
-        "@earendil-works/pi-ai": "^0.84.4",
-        "@earendil-works/pi-coding-agent": "^0.84.4",
-        "@types/bun": "1.4.3",
-        "typescript": "^5.9.2",
-      },
-      "peerDependencies": {
-        "@earendil-works/pi-ai": "*",
-        "@earendil-works/pi-coding-agent": "*",
-      },
-    },
     "packages/needle.js": {
       "name": "needle.js",
       "version": "0.1.0",
@@ -87,6 +70,23 @@
       "optionalPeers": [
         "typegpu",
       ],
+    },
+    "packages/pi-provider-needle": {
+      "name": "pi-provider-needle",
+      "version": "0.1.0",
+      "dependencies": {
+        "needle.js": "^0.1.0",
+      },
+      "devDependencies": {
+        "@earendil-works/pi-ai": "^0.84.4",
+        "@earendil-works/pi-coding-agent": "^0.84.4",
+        "@types/bun": "1.4.3",
+        "typescript": "^5.9.2",
+      },
+      "peerDependencies": {
+        "@earendil-works/pi-ai": "*",
+        "@earendil-works/pi-coding-agent": "*",
+      },
     },
   },
   "packages": {
@@ -1210,8 +1210,6 @@
 
     "needle-ai-provider": ["needle-ai-provider@workspace:packages/needle-ai-provider"],
 
-    "needle-pi-ai-provider": ["needle-pi-ai-provider@workspace:packages/needle-pi-ai-provider"],
-
     "needle.js": ["needle.js@workspace:packages/needle.js"],
 
     "neotraverse": ["neotraverse@1.0.1", "", {}, "sha512-WmmLty1YWwJl9yZi77v2dVIV6X2kuYV8YYBI/G3LWGKdGHmHUvL1z7FW0iDvEvGAwNEoc5x1tOOOyDnf5jJw/w=="],
@@ -1269,6 +1267,8 @@
     "path-browserify": ["path-browserify@1.0.1", "", {}, "sha512-b7uo2UCUOYZcnF/3ID0lulOJi/bafxa1xPe7ZPsammBSpjSWQkjNxlt635YGS2MiR9GjvuXCtz2emr3jbsz98g=="],
 
     "path-key": ["path-key@3.1.1", "", {}, "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q=="],
+
+    "pi-provider-needle": ["pi-provider-needle@workspace:packages/pi-provider-needle"],
 
     "piccolore": ["piccolore@0.1.3", "", {}, "sha512-o8bTeDWjE086iwKrROaDf31K0qC/BENdm15/uH9usSC/uZjJOKb2YGiVHfLY4GhwsERiPI1jmwI2XrA7ACOxVw=="],
 

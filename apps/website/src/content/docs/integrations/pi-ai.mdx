@@ -5,19 +5,19 @@ description: Register Needle as a native pi-ai provider, run an Agent loop, or i
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-`needle-pi-ai-provider` exposes a native pi-ai `Provider<"needle-local">`. It also ships a pi package extension.
+`pi-provider-needle` exposes a native pi-ai `Provider<"needle-local">`. It also ships a pi package extension.
 
 ## Install
 
 <Tabs syncKey="package-manager">
   <TabItem label="Bun">
     ```bash
-    bun add @earendil-works/pi-ai @earendil-works/pi-agent-core needle-pi-ai-provider needle.js
+    bun add @earendil-works/pi-ai @earendil-works/pi-agent-core pi-provider-needle needle.js
     ```
   </TabItem>
   <TabItem label="npm">
     ```bash
-    npm install @earendil-works/pi-ai @earendil-works/pi-agent-core needle-pi-ai-provider needle.js
+    npm install @earendil-works/pi-ai @earendil-works/pi-agent-core pi-provider-needle needle.js
     ```
   </TabItem>
 </Tabs>
@@ -26,7 +26,7 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ```ts
 import { createModels } from "@earendil-works/pi-ai";
-import { createNeedlePiProvider } from "needle-pi-ai-provider";
+import { createNeedlePiProvider } from "pi-provider-needle";
 
 const provider = createNeedlePiProvider({
   weights: "download",
@@ -111,7 +111,7 @@ The provider emits standard `start`, thinking/text/tool-call, and `done`/`error`
 ## Install directly in pi
 
 ```bash
-pi install npm:needle-pi-ai-provider
+pi install npm:pi-provider-needle
 pi --provider needle --model needle-2
 ```
 

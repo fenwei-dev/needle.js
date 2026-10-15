@@ -66,7 +66,7 @@ The TypeGPU backend accelerates packed CQ matrix–vector operators. Independent
 
 A matvec with only 4–512 output rows is too small to amortize submission and synchronous readback in this architecture. The adaptive backend therefore defaults `minimumGpuRows` to `1024`; smaller projections use the optimized TypeScript CQ kernel and the official model's 8,192-row vocabulary projection uses WebGPU. Set `diagnostics: { minimumGpuRows: 0 }` to force every CQ matvec onto the GPU.
 
-This adaptive split slightly beats pure TypeScript on the measured Apple WebKit workload. See [backend benchmarks](/needle.js/reference/benchmarks/).
+This adaptive split slightly beats pure TypeScript on the measured Apple WebKit workload. See [backend benchmarks](/reference/benchmarks/).
 
 ## Experimental resident attention
 

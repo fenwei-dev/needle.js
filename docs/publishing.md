@@ -8,17 +8,13 @@ The [Publish npm packages](../.github/workflows/publish-npm.yml) GitHub Actions 
 
 The private monorepo root and website are never published. Releases currently use one stable version across all three packages. Prereleases are rejected rather than accidentally published under `latest`.
 
-## One-time setup and first publication
+## Authentication: OIDC only
 
-npm trusted publishing is configured in an existing package's settings. Since these are new packages, bootstrap their first publication with a short-lived npm granular access token:
+All three packages were bootstrapped at `0.1.0`. Subsequent releases use npm trusted publishing through the GitHub environment **`npm`** in `fenwei-dev/needle.js`. Configure required reviewers and restrict deployment to release tags as appropriate. Allow `main` too if you want manual dry runs from that branch.
 
-1. Ensure your npm account has permission to create and publish public packages in the **`@fenwei`** scope, including all three names above. If `fenwei` is an npm organization, your account needs the appropriate organization/team permissions. A registry 404 alone does not confirm publishing permission.
-2. Create a GitHub environment named **`npm`** in `fenwei-dev/needle.js`. Configure required reviewers and restrict deployment to release tags as appropriate. Allow `main` too if you want manual dry runs from that branch.
-3. Create a short-lived npm granular token with read/write permission for these packages in the **`@fenwei`** scope and **bypass 2FA** enabled for non-interactive publishing. Add it directly in GitHub as an environment secret named **`NPM_TOKEN`** (a repository secret also works). An existing token limited to unscoped packages may need its permissions updated. Never commit the token or put it in a workflow input, command line, or chat.
-4. Commit and push the workflow and release changes to `main`, then follow the release steps below using an unused release version and tag.
-5. After all three packages exist on npm, configure trusted publishing for each package as described below. Remove the GitHub `NPM_TOKEN` secret and revoke the bootstrap token when the transition is verified.
+The workflow does not reference the `NPM_TOKEN` secret. The publish step explicitly clears `NODE_AUTH_TOKEN`, including setup-node's placeholder, so a bootstrap token cannot mask a broken OIDC configuration. npm lifecycle scripts are disabled when publishing the already-built tarballs.
 
-The secret is exposed only to the final publication step. Builds, tests, clean-consumer installs, and dry runs do not receive it. npm lifecycle scripts are disabled when publishing the already-built tarballs.
+Leave the stored bootstrap secret untouched until an OIDC-only release succeeds, then remove the GitHub `NPM_TOKEN` secret and revoke the token on npm. Never put credentials in workflow inputs, command lines, source code, or chat. Adding a new package requires a separate initial publication before its trusted publisher can be configured; adding a secret alone does not enable token authentication in this workflow.
 
 ## Configure npm trusted publishing
 
@@ -39,6 +35,12 @@ The workflow uses GitHub-hosted runners, Node.js 24, npm 11 (trusted publishing 
 After verifying OIDC publication, npm recommends setting package publishing access to **Require two-factor authentication and disallow tokens**. Protect release tags and require environment approval to control who can publish.
 
 References: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) and [npm provenance](https://docs.npmjs.com/generating-provenance-statements/).
+
+## Verify trusted publishing
+
+Publish a fresh version through this OIDC-only workflow and confirm that all three packages become available on npm. A dry run does not prove authentication, and rerunning an existing release skips published versions without exercising OIDC. Provenance alone is not proof of OIDC authentication: the bootstrap release also included provenance.
+
+If publication fails, check the repository, workflow filename, environment, and allowed action in each package's trusted-publisher settings. Do not silently restore a token fallback, since that would make the test inconclusive.
 
 ## Validate without publishing
 

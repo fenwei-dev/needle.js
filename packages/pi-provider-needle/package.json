@@ -1,6 +1,6 @@
 {
   "name": "@fenwei/pi-provider-needle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "pi-ai provider and pi extension for local Needle 2 inference",
   "type": "module",
   "license": "MIT",

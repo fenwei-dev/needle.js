@@ -80,9 +80,9 @@ jobs:
         if: env.RELEASE_DRY_RUN == 'true'
         run: bun run release:dry-run
 
-      - name: Publish to npm with provenance
+      - name: Publish to npm with OIDC and provenance
         if: env.RELEASE_DRY_RUN != 'true'
         run: bun run release:publish
         env:
-          # Optional, only for bootstrapping packages before trusted publishing is configured.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Clear setup-node's placeholder; do not allow a bootstrap-token fallback.
+          NODE_AUTH_TOKEN: ""

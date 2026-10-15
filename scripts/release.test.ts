@@ -141,6 +141,29 @@ describe("release validation", () => {
   });
 });
 
+describe("publication workflow authentication", () => {
+  test("requires OIDC and does not inject the bootstrap token", async () => {
+    const contents = await Bun.file(
+      new URL("../.github/workflows/publish-npm.yml", import.meta.url),
+    ).text();
+    const workflow = Bun.YAML.parse(contents) as {
+      jobs: {
+        publish: {
+          environment: string;
+          permissions: Record<string, string>;
+          steps: { run?: string; env?: Record<string, string> }[];
+        };
+      };
+    };
+    const job = workflow.jobs.publish;
+    const publishStep = job.steps.find((step) => step.run === "bun run release:publish");
+    expect(job.environment).toBe("npm");
+    expect(job.permissions["id-token"]).toBe("write");
+    expect(publishStep?.env?.NODE_AUTH_TOKEN).toBe("");
+    expect(contents).not.toContain("secrets.NPM_TOKEN");
+  });
+});
+
 describe("npm publication preflight", () => {
   test("URL-encodes the scoped package name as one registry path segment", async () => {
     let requestedUrl = "";

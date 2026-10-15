@@ -1,6 +1,6 @@
 {
   "name": "@fenwei/needle.js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Needle 2 inference and schema-constrained tool calling for TypeScript",
   "type": "module",
   "license": "MIT",

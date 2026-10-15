@@ -1,6 +1,6 @@
 {
   "name": "@fenwei/needle-ai-provider",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Vercel AI SDK provider for local Needle 2 inference",
   "type": "module",
   "license": "MIT",

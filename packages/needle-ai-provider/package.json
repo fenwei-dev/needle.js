@@ -34,7 +34,7 @@
     "needle.js": ">=0.1.0"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "1.4.3",
     "ai": "^7.0.85",
     "needle.js": "workspace:*",
     "typescript": "^5.9.2"

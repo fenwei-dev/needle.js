@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { LanguageModelV4CallOptions } from "@ai-sdk/provider";
+import type { NeedleModel, NeedleResponse } from "@fenwei/needle.js";
 import { generateText, jsonSchema, stepCountIs, streamText, tool } from "ai";
-import type { NeedleModel, NeedleResponse } from "needle.js";
 import { createNeedleProvider } from "../src/index.js";
 
 function fakeModel(text = "local output"): NeedleModel {
@@ -62,7 +62,7 @@ const weatherTool = {
   },
 };
 
-describe("needle-ai-provider", () => {
+describe("@fenwei/needle-ai-provider", () => {
   test("works with AI SDK generateText in raw mode", async () => {
     const provider = createNeedleProvider({
       model: fakeModel("hello from Needle"),

@@ -1,16 +1,16 @@
-# needle-ai-provider
+# @fenwei/needle-ai-provider
 
-A [Vercel AI SDK](https://ai-sdk.dev/) language-model provider for running Needle 2 locally through [`needle.js`](../needle.js).
+A [Vercel AI SDK](https://ai-sdk.dev/) language-model provider for running Needle 2 locally through [`@fenwei/needle.js`](../needle.js).
 
 ```bash
-bun add ai needle-ai-provider needle.js
+bun add ai @fenwei/needle-ai-provider @fenwei/needle.js
 ```
 
 ## Basic use
 
 ```ts
 import { generateText } from "ai";
-import { createNeedleProvider } from "needle-ai-provider";
+import { createNeedleProvider } from "@fenwei/needle-ai-provider";
 
 const needle = createNeedleProvider({
   weights: "download",
@@ -37,7 +37,7 @@ import {
   stepCountIs,
   tool,
 } from "ai";
-import { createNeedleProvider } from "needle-ai-provider";
+import { createNeedleProvider } from "@fenwei/needle-ai-provider";
 
 const needle = createNeedleProvider({ weights: "download" });
 

@@ -16,7 +16,7 @@ import {
   type NeedleOptions,
   type NeedleResponse,
   type NeedleTool,
-} from "needle.js";
+} from "@fenwei/needle.js";
 import { convertContext } from "./context.js";
 import { type NeedlePiModelOptions, NeedlePiModelPool } from "./model-pool.js";
 

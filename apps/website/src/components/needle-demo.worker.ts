@@ -1,4 +1,4 @@
-import type { NeedleModel } from "needle.js";
+import type { NeedleModel } from "@fenwei/needle.js";
 import type {
   DemoBackend,
   RoomState,
@@ -85,7 +85,7 @@ async function loadModel(request: WorkerRunRequest): Promise<NeedleModel> {
   model = undefined;
   loadedFor = undefined;
   if (previous) await previous.dispose();
-  const { NeedleModel } = await import("needle.js");
+  const { NeedleModel } = await import("@fenwei/needle.js");
   postStatus(request.id, "Preparing 13.7 MB model…");
   const onProgress = ({
     loaded,
@@ -148,7 +148,7 @@ async function runRaw(
   prompt: string,
   room: RoomController,
 ): Promise<DemoResult> {
-  const { Needle, defineTool } = await import("needle.js");
+  const { Needle, defineTool } = await import("@fenwei/needle.js");
   const getStatus = defineTool<Record<string, never>, RoomState>({
     name: "get_device_status",
     description: "Read all bedroom device states",
@@ -228,7 +228,7 @@ async function runAiSdk(
   room: RoomController,
 ): Promise<DemoResult> {
   const [{ generateText, jsonSchema, stepCountIs, tool }, { createNeedleProvider }] =
-    await Promise.all([import("ai"), import("needle-ai-provider")]);
+    await Promise.all([import("ai"), import("@fenwei/needle-ai-provider")]);
   const provider = createNeedleProvider({
     model,
     disposeModel: false,
@@ -318,7 +318,7 @@ async function runPiAgent(
   const [{ Agent }, piAi, { createNeedlePiProvider }] = await Promise.all([
     import("@earendil-works/pi-agent-core"),
     import("@earendil-works/pi-ai"),
-    import("pi-provider-needle"),
+    import("@fenwei/pi-provider-needle"),
   ]);
   const provider = createNeedlePiProvider({
     model,

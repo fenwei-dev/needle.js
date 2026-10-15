@@ -8,6 +8,7 @@ dist
 .bench
 .resident-test
 .package-smoke
+.release
 .vercel
 *.tgz
 *.cact

@@ -16,7 +16,7 @@ import {
   type NeedleOptions,
   type NeedleResponse,
   type NeedleTool,
-} from "needle.js";
+} from "@fenwei/needle.js";
 import type { NeedleModelPool } from "./model-pool.js";
 import { type ConvertedNeedlePrompt, convertPrompt } from "./prompt.js";
 

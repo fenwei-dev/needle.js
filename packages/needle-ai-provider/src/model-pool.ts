@@ -1,4 +1,4 @@
-import { type LoadModelOptions, NeedleModel } from "needle.js";
+import { type LoadModelOptions, NeedleModel } from "@fenwei/needle.js";
 
 export interface NeedleModelPoolOptions extends LoadModelOptions {
   readonly model?: NeedleModel | PromiseLike<NeedleModel>;

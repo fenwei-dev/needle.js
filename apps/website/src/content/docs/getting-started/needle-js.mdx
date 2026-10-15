@@ -12,12 +12,12 @@ import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 <Tabs syncKey="package-manager">
   <TabItem label="Bun">
     ```bash
-    bun add needle.js
+    bun add @fenwei/needle.js
     ```
   </TabItem>
   <TabItem label="npm">
     ```bash
-    npm install needle.js
+    npm install @fenwei/needle.js
     ```
   </TabItem>
 </Tabs>
@@ -28,7 +28,7 @@ import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 1. Define the schema and implementation.
 
    ```ts
-   import { createNeedle, defineTool } from "needle.js";
+   import { createNeedle, defineTool } from "@fenwei/needle.js";
 
    const getWeather = defineTool<
      { city: string; units?: "celsius" | "fahrenheit" },
@@ -114,7 +114,7 @@ The `function_calls` property is an alias for interoperability with the official
 Extraction is a one-tool call whose arguments are the record:
 
 ```ts
-import { extract } from "needle.js";
+import { extract } from "@fenwei/needle.js";
 
 const invoice = await extract<{ vendor: string; total: number }>(
   "Invoice from Acme Corp, total $1,200",
@@ -154,7 +154,7 @@ The base confidence calibration does not automatically remain valid after fine-t
 You can access token generation directly, although Needle is trained for calls rather than chat:
 
 ```ts
-import { NeedleModel } from "needle.js";
+import { NeedleModel } from "@fenwei/needle.js";
 
 const model = await NeedleModel.load({ weights: "download" });
 const result = await model.generate("The most surprising thing about", {

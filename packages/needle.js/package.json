@@ -1,9 +1,22 @@
 {
-  "name": "needle.js",
+  "name": "@fenwei/needle.js",
   "version": "0.1.0",
   "description": "Needle 2 inference and schema-constrained tool calling for TypeScript",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://needle.fenwei.dev/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fenwei-dev/needle.js.git",
+    "directory": "packages/needle.js"
+  },
+  "bugs": {
+    "url": "https://github.com/fenwei-dev/needle.js/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "sideEffects": false,
   "files": [
     "dist",

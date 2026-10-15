@@ -11,9 +11,9 @@ All TypeScript source code and original documentation in the needle.js monorepo 
 
 | Component | License |
 | --- | --- |
-| `needle.js` core runtime | MIT |
-| `needle-ai-provider` | MIT |
-| `pi-provider-needle` | MIT |
+| `@fenwei/needle.js` core runtime | MIT |
+| `@fenwei/needle-ai-provider` | MIT |
+| `@fenwei/pi-provider-needle` | MIT |
 | Website application and documentation | MIT |
 
 ## Upstream Needle reference

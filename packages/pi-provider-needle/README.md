@@ -1,16 +1,16 @@
-# pi-provider-needle
+# @fenwei/pi-provider-needle
 
 A native [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) provider for local Needle 2 inference, plus an installable [pi](https://pi.dev/) extension.
 
 ## pi-ai library
 
 ```bash
-bun add @earendil-works/pi-ai pi-provider-needle needle.js
+bun add @earendil-works/pi-ai @fenwei/pi-provider-needle @fenwei/needle.js
 ```
 
 ```ts
 import { createModels, Type, type Context, type Tool } from "@earendil-works/pi-ai";
-import { createNeedlePiProvider } from "pi-provider-needle";
+import { createNeedlePiProvider } from "@fenwei/pi-provider-needle";
 
 const provider = createNeedlePiProvider({
   weights: "download",
@@ -72,7 +72,7 @@ It emits the standard pi-ai event protocol: `start`, buffered thinking/text/tool
 The package includes a pi extension manifest:
 
 ```bash
-pi install npm:pi-provider-needle
+pi install npm:@fenwei/pi-provider-needle
 pi --provider needle --model needle-2
 ```
 

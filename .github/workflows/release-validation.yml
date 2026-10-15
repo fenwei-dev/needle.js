@@ -6,6 +6,9 @@ on:
 permissions:
   contents: read
 
+env:
+  ASTRO_TELEMETRY_DISABLED: "1"
+
 jobs:
   package:
     runs-on: ubuntu-latest
@@ -13,6 +16,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -28,23 +37,14 @@ jobs:
       - name: Test workspaces
         run: bun run test
 
-      - name: Build and verify package invariants
-        run: bun run --cwd packages/needle.js prepack
-
-      - name: Read package metadata
-        id: package
-        run: |
-          VERSION=$(bun -e 'console.log((await Bun.file("packages/needle.js/package.json").json()).version)')
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tarball=packages/needle.js/.package-smoke/needle.js-$VERSION.tgz" >> "$GITHUB_OUTPUT"
-
-      - name: Test clean tarball consumer
+      - name: Pack and test all three packages in a clean consumer
         run: bun run test:package
 
-      - name: Upload validated tarball
+      - name: Upload validated tarballs
         uses: actions/upload-artifact@v6
         with:
-          name: needle.js-${{ steps.package.outputs.version }}-validated
-          path: ${{ steps.package.outputs.tarball }}
+          name: npm-packages-validated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .release/*.tgz
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7

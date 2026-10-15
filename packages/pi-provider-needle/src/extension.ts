@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { BackendSelection } from "needle.js";
+import type { BackendSelection } from "@fenwei/needle.js";
 import { createNeedlePiProvider } from "./provider.js";
 
 export default function needlePiExtension(pi: ExtensionAPI): void {

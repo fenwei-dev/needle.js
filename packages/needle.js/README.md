@@ -1,5 +1,7 @@
 # needle.js
 
+Published on npm as **`@fenwei/needle.js`**.
+
 A TypeScript inference library for **Needle 2**, Cactus Compute's 45M-parameter tool-calling model, with a pure TypeScript reference backend and a TypeGPU-resident WebGPU engine. It reads the official self-contained `.cact` file directly and runs in Node.js, Bun, and modern browsers.
 
 > **Unofficial implementation:** needle.js is an independent project and is not affiliated with or endorsed by Cactus Compute.
@@ -8,8 +10,8 @@ The package provides two interchangeable implementations:
 
 | Entry point | Backend | Extra requirement |
 | --- | --- | --- |
-| `needle.js/cpu` | Pure TypeScript | None |
-| `needle.js/typegpu` | TypeGPU + WebGPU | `typegpu` and a WebGPU device |
+| `@fenwei/needle.js/cpu` | Pure TypeScript | None |
+| `@fenwei/needle.js/typegpu` | TypeGPU + WebGPU | `typegpu` and a WebGPU device |
 
 Both use the same tokenizer, incremental decoder, conversation API, and continuous byte-level JSON Schema grammar. The GPU implementation offloads sufficiently large packed Cactus-Quant matrix-vector products to WebGPU while TypeScript handles small projections, recurrent operations, attention, and grammar.
 
@@ -35,9 +37,9 @@ The independent TypeScript implementation was developed using the public archite
 ## Installation
 
 ```bash
-npm install needle.js
+npm install @fenwei/needle.js
 # or
-bun add needle.js
+bun add @fenwei/needle.js
 ```
 
 For a GPU backend, install its optional peer:
@@ -51,7 +53,7 @@ Node-side WebGPU initialization requires a platform WebGPU device provider. A br
 ## Quick start: tool calling
 
 ```ts
-import { createNeedle, defineTool } from "needle.js";
+import { createNeedle, defineTool } from "@fenwei/needle.js";
 
 const getWeather = defineTool<
   { city: string; units?: "celsius" | "fahrenheit" },
@@ -117,7 +119,7 @@ The response includes camel-case `functionCalls` and an official-envelope-compat
 ### Pure TypeScript
 
 ```ts
-import { createNeedleCPU } from "needle.js/cpu";
+import { createNeedleCPU } from "@fenwei/needle.js/cpu";
 
 const agent = await createNeedleCPU({
   weights: "download",
@@ -130,7 +132,7 @@ No native addon, WASM module, BLAS library, or WebGPU implementation is required
 ### TypeGPU
 
 ```ts
-import { createNeedleTypeGPU } from "needle.js/typegpu";
+import { createNeedleTypeGPU } from "@fenwei/needle.js/typegpu";
 
 const agent = await createNeedleTypeGPU({
   weights: "download",
@@ -253,7 +255,7 @@ This mechanism makes embedding explicit: applications that download or ship the 
 Extraction is a one-tool call:
 
 ```ts
-import { extract } from "needle.js";
+import { extract } from "@fenwei/needle.js";
 
 const invoice = await extract(
   "Invoice from Acme Corp, total $1,200, due 2026-09-01",
@@ -275,7 +277,7 @@ const invoice = await extract(
 ## Raw generation
 
 ```ts
-import { NeedleModel } from "needle.js";
+import { NeedleModel } from "@fenwei/needle.js";
 
 const model = await NeedleModel.load({
   weights: "download",
@@ -323,7 +325,7 @@ import {
   NeedleRuntime,
   JsonSchemaGrammar,
   ToolCallGrammar,
-} from "needle.js";
+} from "@fenwei/needle.js";
 ```
 
 A custom backend implements `InferenceBackend`: selected-row CQ matvec, optional independent-matvec batching, row gather, and disposal.

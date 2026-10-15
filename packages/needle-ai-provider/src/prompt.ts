@@ -1,6 +1,6 @@
 import type { LanguageModelV4Prompt, LanguageModelV4ToolResultOutput } from "@ai-sdk/provider";
 import { InvalidPromptError, UnsupportedFunctionalityError } from "@ai-sdk/provider";
-import { CHAT_MARKERS } from "needle.js";
+import { CHAT_MARKERS } from "@fenwei/needle.js";
 
 export type NeedlePromptEvent =
   | { readonly type: "user"; readonly text: string }

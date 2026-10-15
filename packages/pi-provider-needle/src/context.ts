@@ -1,5 +1,5 @@
 import type { Context, Message, ToolResultMessage } from "@earendil-works/pi-ai";
-import { CHAT_MARKERS } from "needle.js";
+import { CHAT_MARKERS } from "@fenwei/needle.js";
 
 export type NeedleContextEvent =
   | { readonly type: "user"; readonly text: string }

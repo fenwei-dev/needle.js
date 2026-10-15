@@ -5,19 +5,19 @@ description: Use local Needle 2 inference through generateText, streamText, tool
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-`needle-ai-provider` implements the AI SDK v7 `ProviderV4` and `LanguageModelV4` contracts.
+`@fenwei/needle-ai-provider` implements the AI SDK v7 `ProviderV4` and `LanguageModelV4` contracts.
 
 ## Install
 
 <Tabs syncKey="package-manager">
   <TabItem label="Bun">
     ```bash
-    bun add ai needle-ai-provider needle.js
+    bun add ai @fenwei/needle-ai-provider @fenwei/needle.js
     ```
   </TabItem>
   <TabItem label="npm">
     ```bash
-    npm install ai needle-ai-provider needle.js
+    npm install ai @fenwei/needle-ai-provider @fenwei/needle.js
     ```
   </TabItem>
 </Tabs>
@@ -25,7 +25,7 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 ## Create the provider
 
 ```ts
-import { createNeedleProvider } from "needle-ai-provider";
+import { createNeedleProvider } from "@fenwei/needle-ai-provider";
 
 const needle = createNeedleProvider({
   weights: "download",

@@ -1,9 +1,22 @@
 {
-  "name": "pi-provider-needle",
+  "name": "@fenwei/pi-provider-needle",
   "version": "0.1.0",
   "description": "pi-ai provider and pi extension for local Needle 2 inference",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://needle.fenwei.dev/integrations/pi-ai/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fenwei-dev/needle.js.git",
+    "directory": "packages/pi-provider-needle"
+  },
+  "bugs": {
+    "url": "https://github.com/fenwei-dev/needle.js/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "sideEffects": false,
   "files": [
     "dist",
@@ -29,11 +42,12 @@
   "scripts": {
     "build": "bun run clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
+    "prepack": "bun run build",
     "test": "bun test tests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "needle.js": "^0.1.0"
+    "@fenwei/needle.js": "^0.1.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

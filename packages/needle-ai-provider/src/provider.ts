@@ -5,7 +5,7 @@ import {
   NoSuchModelError,
   type ProviderV4,
 } from "@ai-sdk/provider";
-import type { NeedleOptions } from "needle.js";
+import type { NeedleOptions } from "@fenwei/needle.js";
 import { NeedleModelPool, type NeedleModelPoolOptions } from "./model-pool.js";
 import {
   type NeedleAgentLike,

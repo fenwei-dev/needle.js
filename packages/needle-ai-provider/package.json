@@ -1,9 +1,22 @@
 {
-  "name": "needle-ai-provider",
+  "name": "@fenwei/needle-ai-provider",
   "version": "0.1.0",
   "description": "Vercel AI SDK provider for local Needle 2 inference",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://needle.fenwei.dev/integrations/ai-sdk/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fenwei-dev/needle.js.git",
+    "directory": "packages/needle-ai-provider"
+  },
+  "bugs": {
+    "url": "https://github.com/fenwei-dev/needle.js/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "sideEffects": false,
   "files": [
     "dist",
@@ -24,6 +37,7 @@
   "scripts": {
     "build": "bun run clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
+    "prepack": "bun run build",
     "test": "bun test tests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -31,12 +45,12 @@
     "@ai-sdk/provider": "^4.0.9"
   },
   "peerDependencies": {
-    "needle.js": ">=0.1.0"
+    "@fenwei/needle.js": ">=0.1.0"
   },
   "devDependencies": {
+    "@fenwei/needle.js": "workspace:*",
     "@types/bun": "1.4.3",
     "ai": "^7.0.85",
-    "needle.js": "workspace:*",
     "typescript": "^5.9.2"
   },
   "engines": {

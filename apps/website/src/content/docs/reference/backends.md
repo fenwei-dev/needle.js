@@ -8,7 +8,7 @@ The model architecture and decoding loop are backend-independent. A backend supp
 ## Pure TypeScript
 
 ```ts
-import { createNeedleCPU } from "needle.js/cpu";
+import { createNeedleCPU } from "@fenwei/needle.js/cpu";
 
 const agent = await createNeedleCPU({
   weights: "download",
@@ -26,7 +26,7 @@ The CQ kernel applies a normalized fast Walsh–Hadamard transform to each activ
 ## TypeGPU
 
 ```ts
-import { createNeedleTypeGPU } from "needle.js/typegpu";
+import { createNeedleTypeGPU } from "@fenwei/needle.js/typegpu";
 
 const agent = await createNeedleTypeGPU({
   weights: "download",

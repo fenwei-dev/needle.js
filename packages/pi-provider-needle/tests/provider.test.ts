@@ -6,7 +6,7 @@ import {
   type Tool,
   Type,
 } from "@earendil-works/pi-ai";
-import type { NeedleModel, NeedleResponse } from "needle.js";
+import type { NeedleModel, NeedleResponse } from "@fenwei/needle.js";
 import { createNeedlePiProvider } from "../src/index.js";
 
 function fakeModel(text = "local text"): NeedleModel {
@@ -64,7 +64,7 @@ const baseContext: Context = {
   tools: [weatherTool],
 };
 
-describe("pi-provider-needle", () => {
+describe("@fenwei/pi-provider-needle", () => {
   test("registers a keyless local model in a Models collection", async () => {
     const provider = createNeedlePiProvider({ model: fakeModel() });
     const models = createModels();

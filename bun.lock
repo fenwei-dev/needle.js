@@ -6,6 +6,8 @@
       "name": "needle-js-monorepo",
       "devDependencies": {
         "@biomejs/biome": "2.5.11",
+        "@types/bun": "1.4.3",
+        "typescript": "^5.9.3",
       },
     },
     "apps/website": {
@@ -17,12 +19,12 @@
         "@astrojs/starlight-tailwind": "^5.0.0",
         "@earendil-works/pi-agent-core": "^0.84.4",
         "@earendil-works/pi-ai": "^0.84.4",
+        "@fenwei/needle-ai-provider": "workspace:*",
+        "@fenwei/needle.js": "workspace:*",
+        "@fenwei/pi-provider-needle": "workspace:*",
         "@tailwindcss/vite": "^4.3.3",
         "ai": "^7.0.85",
         "astro": "^7.2.9",
-        "needle-ai-provider": "workspace:*",
-        "needle.js": "workspace:*",
-        "pi-provider-needle": "workspace:*",
         "preact": "^10.28.2",
         "sharp": "^0.35.3",
         "tailwindcss": "^4.3.3",
@@ -38,23 +40,23 @@
       },
     },
     "packages/needle-ai-provider": {
-      "name": "needle-ai-provider",
+      "name": "@fenwei/needle-ai-provider",
       "version": "0.1.0",
       "dependencies": {
         "@ai-sdk/provider": "^4.0.9",
       },
       "devDependencies": {
+        "@fenwei/needle.js": "workspace:*",
         "@types/bun": "1.4.3",
         "ai": "^7.0.85",
-        "needle.js": "workspace:*",
         "typescript": "^5.9.2",
       },
       "peerDependencies": {
-        "needle.js": ">=0.1.0",
+        "@fenwei/needle.js": ">=0.1.0",
       },
     },
     "packages/needle.js": {
-      "name": "needle.js",
+      "name": "@fenwei/needle.js",
       "version": "0.1.0",
       "dependencies": {
         "@webgpu/types": "^0.1.69",
@@ -72,10 +74,10 @@
       ],
     },
     "packages/pi-provider-needle": {
-      "name": "pi-provider-needle",
+      "name": "@fenwei/pi-provider-needle",
       "version": "0.1.0",
       "dependencies": {
-        "needle.js": "^0.1.0",
+        "@fenwei/needle.js": "^0.1.0",
       },
       "devDependencies": {
         "@earendil-works/pi-ai": "^0.84.4",
@@ -379,6 +381,12 @@
     "@expressive-code/plugin-shiki": ["@expressive-code/plugin-shiki@0.44.1", "", { "dependencies": { "@expressive-code/core": "^0.44.1", "shiki": "^4.0.2" } }, "sha512-YApiZt3buUzBwL5tqj8G+sYC5NjMjRCHgQwr9bmGl69rtcHy6fE9dooWUeKYB978fJT2BuxT5FeHcF47rA3SEg=="],
 
     "@expressive-code/plugin-text-markers": ["@expressive-code/plugin-text-markers@0.44.1", "", { "dependencies": { "@expressive-code/core": "^0.44.1" } }, "sha512-B3BsJoJ8CFMlcIX9f+X9tcI3C4zPDO601+YuLi9GheSTNro7ZfqSjLptMQKBHOWZvxnAtY5zvIX7iO/qtBhNBg=="],
+
+    "@fenwei/needle-ai-provider": ["@fenwei/needle-ai-provider@workspace:packages/needle-ai-provider"],
+
+    "@fenwei/needle.js": ["@fenwei/needle.js@workspace:packages/needle.js"],
+
+    "@fenwei/pi-provider-needle": ["@fenwei/pi-provider-needle@workspace:packages/pi-provider-needle"],
 
     "@google/genai": ["@google/genai@1.52.0", "", { "dependencies": { "google-auth-library": "^10.3.0", "p-retry": "^4.6.2", "protobufjs": "^7.5.4", "ws": "^8.18.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.2" }, "optionalPeers": ["@modelcontextprotocol/sdk"] }, "sha512-gwSvbpiN/17O9TbsqSsE/OzZcpv5Fo4RQjdngGgogtuB9RsyJ8ZHhX5KjHj1bp5N9snN2eK8LDGXSaWW2hof8Q=="],
 
@@ -1208,10 +1216,6 @@
 
     "nanoid": ["nanoid@3.3.18", "", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w=="],
 
-    "needle-ai-provider": ["needle-ai-provider@workspace:packages/needle-ai-provider"],
-
-    "needle.js": ["needle.js@workspace:packages/needle.js"],
-
     "neotraverse": ["neotraverse@1.0.1", "", {}, "sha512-WmmLty1YWwJl9yZi77v2dVIV6X2kuYV8YYBI/G3LWGKdGHmHUvL1z7FW0iDvEvGAwNEoc5x1tOOOyDnf5jJw/w=="],
 
     "nlcst-to-string": ["nlcst-to-string@4.0.0", "", { "dependencies": { "@types/nlcst": "^2.0.0" } }, "sha512-YKLBCcUYKAg0FNlOBT6aI91qFmSiFKiluk655WzPF+DDMA02qIyy8uiRqI8QXtcFpEvll12LpL5MXqEmAZ+dcA=="],
@@ -1267,8 +1271,6 @@
     "path-browserify": ["path-browserify@1.0.1", "", {}, "sha512-b7uo2UCUOYZcnF/3ID0lulOJi/bafxa1xPe7ZPsammBSpjSWQkjNxlt635YGS2MiR9GjvuXCtz2emr3jbsz98g=="],
 
     "path-key": ["path-key@3.1.1", "", {}, "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q=="],
-
-    "pi-provider-needle": ["pi-provider-needle@workspace:packages/pi-provider-needle"],
 
     "piccolore": ["piccolore@0.1.3", "", {}, "sha512-o8bTeDWjE086iwKrROaDf31K0qC/BENdm15/uH9usSC/uZjJOKb2YGiVHfLY4GhwsERiPI1jmwI2XrA7ACOxVw=="],
 

@@ -15,11 +15,18 @@
     "dev": "bun run build:packages && bun run --cwd apps/website dev",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "test": "bun run build:packages && bun run --cwd packages/needle.js test && bun run --cwd packages/needle-ai-provider test && bun run --cwd packages/pi-provider-needle test && bun run --cwd apps/website test",
-    "test:package": "bun run --cwd packages/needle.js test:package",
-    "typecheck": "bun run build:packages && bun run --cwd packages/needle.js typecheck && bun run --cwd packages/needle-ai-provider typecheck && bun run --cwd packages/pi-provider-needle typecheck && bun run --cwd apps/website typecheck"
+    "release:check": "bun run scripts/release.ts check",
+    "release:dry-run": "bun run scripts/release.ts dry-run",
+    "release:publish": "bun run scripts/release.ts publish",
+    "test": "bun run test:release && bun run build:packages && bun run --cwd packages/needle.js test && bun run --cwd packages/needle-ai-provider test && bun run --cwd packages/pi-provider-needle test && bun run --cwd apps/website test",
+    "test:package": "bun run scripts/release.ts pack",
+    "test:release": "bun test scripts/release.test.ts",
+    "typecheck": "bun run typecheck:release && bun run build:packages && bun run --cwd packages/needle.js typecheck && bun run --cwd packages/needle-ai-provider typecheck && bun run --cwd packages/pi-provider-needle typecheck && bun run --cwd apps/website typecheck",
+    "typecheck:release": "tsc -p scripts/tsconfig.json"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.11"
+    "@biomejs/biome": "2.5.11",
+    "@types/bun": "1.4.3",
+    "typescript": "^5.9.3"
   }
 }

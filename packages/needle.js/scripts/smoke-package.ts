@@ -7,7 +7,7 @@ const manifest = await Bun.file(join(packageRoot, "package.json")).json();
 if (typeof manifest.version !== "string") throw new Error("Package version is missing");
 const root = join(packageRoot, ".package-smoke");
 const consumer = join(root, "consumer");
-const tarballName = `needle.js-${manifest.version}.tgz`;
+const tarballName = `${manifest.name.replace(/^@/, "").replaceAll("/", "-")}-${manifest.version}.tgz`;
 const tarball = join(root, tarballName);
 await rm(root, { recursive: true, force: true });
 await mkdir(consumer, { recursive: true });
@@ -48,7 +48,7 @@ await Bun.write(
       private: true,
       type: "module",
       dependencies: {
-        "needle.js": `file:../${tarballName}`,
+        "@fenwei/needle.js": `file:../${tarballName}`,
         typegpu: "0.12.4",
         typescript: "5.9.3",
       },
@@ -59,23 +59,23 @@ await Bun.write(
 );
 await Bun.write(
   join(consumer, "smoke.mjs"),
-  `import { NeedleModel, createNeedle } from "needle.js";
-import { createNeedleCPU } from "needle.js/cpu";
-import { createNeedleTypeGPU } from "needle.js/typegpu";
+  `import { NeedleModel, createNeedle } from "@fenwei/needle.js";
+import { createNeedleCPU } from "@fenwei/needle.js/cpu";
+import { createNeedleTypeGPU } from "@fenwei/needle.js/typegpu";
 
 for (const [name, value] of Object.entries({ NeedleModel, createNeedle, createNeedleCPU, createNeedleTypeGPU })) {
   if (typeof value !== "function") throw new Error(name + " is not exported");
 }
 let removed = false;
-try { await import("needle.js/vgpu"); } catch { removed = true; }
-if (!removed) throw new Error("removed needle.js/vgpu export unexpectedly resolved");
+try { await import("@fenwei/needle.js/vgpu"); } catch { removed = true; }
+if (!removed) throw new Error("removed @fenwei/needle.js/vgpu export unexpectedly resolved");
 console.log("package runtime imports passed");
 `,
 );
 await Bun.write(
   join(consumer, "smoke.ts"),
-  `import type { BackendSelection } from "needle.js";
-import type { TypeGPUBackendOptions, TypeGPUExecution } from "needle.js/typegpu";
+  `import type { BackendSelection } from "@fenwei/needle.js";
+import type { TypeGPUBackendOptions, TypeGPUExecution } from "@fenwei/needle.js/typegpu";
 
 const backend: BackendSelection = "typegpu";
 const execution: TypeGPUExecution = "resident";

@@ -8,7 +8,7 @@ function check(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-check(manifest.name === "needle.js", "unexpected package name");
+check(manifest.name === "@fenwei/needle.js", "unexpected package name");
 check(
   typeof manifest.version === "string" &&
     /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(

@@ -1,6 +1,12 @@
 # needle.js monorepo
 
-[![Deploy website](https://github.com/fenwei-dev/needle.js/actions/workflows/deploy-website.yml/badge.svg)](https://github.com/fenwei-dev/needle.js/actions/workflows/deploy-website.yml)
+[![Deploy website](https://img.shields.io/github/actions/workflow/status/fenwei-dev/needle.js/deploy-website.yml?branch=main&style=flat&label=website)](https://github.com/fenwei-dev/needle.js/actions/workflows/deploy-website.yml)
+[![Publish npm packages](https://img.shields.io/github/actions/workflow/status/fenwei-dev/needle.js/publish-npm.yml?event=push&style=flat&label=publish)](https://github.com/fenwei-dev/needle.js/actions/workflows/publish-npm.yml)
+[![@fenwei/needle.js version](https://img.shields.io/npm/v/%40fenwei%2Fneedle.js?style=flat&label=needle.js)](https://www.npmjs.com/package/@fenwei/needle.js)
+[![@fenwei/needle-ai-provider version](https://img.shields.io/npm/v/%40fenwei%2Fneedle-ai-provider?style=flat&label=AI%20SDK)](https://www.npmjs.com/package/@fenwei/needle-ai-provider)
+[![@fenwei/pi-provider-needle version](https://img.shields.io/npm/v/%40fenwei%2Fpi-provider-needle?style=flat&label=pi)](https://www.npmjs.com/package/@fenwei/pi-provider-needle)
+[![MIT license](https://img.shields.io/github/license/fenwei-dev/needle.js?style=flat)](LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-needle.fenwei.dev-blue?style=flat)](https://needle.fenwei.dev/)
 
 Needle 2 inference for TypeScript with a pure TypeScript reference backend, a TypeGPU-resident WebGPU engine, agent-framework integrations, and an educational implementation guide.
 
@@ -37,7 +43,7 @@ bun run --cwd apps/website dev
 
 The [Publish npm packages](.github/workflows/publish-npm.yml) workflow publishes `@fenwei/needle.js`, `@fenwei/needle-ai-provider`, and `@fenwei/pi-provider-needle` together when a matching `vX.Y.Z` tag is pushed. It validates all workspaces and smoke-tests the exact tarballs before publishing with provenance. Manual runs default to a dry run.
 
-See [Publishing to npm](docs/publishing.md) for the one-time bootstrap, npm trusted-publisher setup, and release commands.
+See [Publishing to npm](docs/publishing.md) for npm trusted-publisher setup, validation, and release commands.
 
 ## Licensing
 

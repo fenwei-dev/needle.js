@@ -10,11 +10,9 @@ The private monorepo root and website are never published. Releases currently us
 
 ## Authentication: OIDC only
 
-All three packages were bootstrapped at `0.1.0`. Subsequent releases use npm trusted publishing through the GitHub environment **`npm`** in `fenwei-dev/needle.js`. Configure required reviewers and restrict deployment to release tags as appropriate. Allow `main` too if you want manual dry runs from that branch.
+Releases use npm trusted publishing through the GitHub environment **`npm`** in `fenwei-dev/needle.js`. Configure required reviewers and restrict deployment to release tags as appropriate. Allow `main` too if you want manual dry runs from that branch.
 
-The workflow does not reference the `NPM_TOKEN` secret. The publish step explicitly clears `NODE_AUTH_TOKEN`, including setup-node's placeholder, so a bootstrap token cannot mask a broken OIDC configuration. npm lifecycle scripts are disabled when publishing the already-built tarballs.
-
-Leave the stored bootstrap secret untouched until an OIDC-only release succeeds, then remove the GitHub `NPM_TOKEN` secret and revoke the token on npm. Never put credentials in workflow inputs, command lines, source code, or chat. Adding a new package requires a separate initial publication before its trusted publisher can be configured; adding a secret alone does not enable token authentication in this workflow.
+No npm access token is required. npm lifecycle scripts are disabled when publishing the already-built tarballs.
 
 ## Configure npm trusted publishing
 
@@ -38,9 +36,9 @@ References: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
 
 ## Verify trusted publishing
 
-Publish a fresh version through this OIDC-only workflow and confirm that all three packages become available on npm. A dry run does not prove authentication, and rerunning an existing release skips published versions without exercising OIDC. Provenance alone is not proof of OIDC authentication: the bootstrap release also included provenance.
+Publish a fresh version through this OIDC-only workflow and confirm that all three packages become available on npm. A dry run does not prove authentication, and rerunning an existing release skips published versions without exercising OIDC.
 
-If publication fails, check the repository, workflow filename, environment, and allowed action in each package's trusted-publisher settings. Do not silently restore a token fallback, since that would make the test inconclusive.
+If publication fails, check the repository, workflow filename, environment, and allowed action in each package's trusted-publisher settings.
 
 ## Validate without publishing
 

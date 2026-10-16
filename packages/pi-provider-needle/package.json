@@ -4,7 +4,7 @@
   "description": "pi-ai provider and pi extension for local Needle 2 inference",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://needle.fenwei.dev/integrations/pi-ai/",
+  "homepage": "https://needle.js.org/integrations/pi-ai/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fenwei-dev/needle.js.git",

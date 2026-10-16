@@ -4,7 +4,7 @@
   "description": "Needle 2 inference and schema-constrained tool calling for TypeScript",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://needle.fenwei.dev/",
+  "homepage": "https://needle.js.org/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fenwei-dev/needle.js.git",

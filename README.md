@@ -6,13 +6,13 @@
 [![@fenwei/needle-ai-provider version](https://img.shields.io/npm/v/%40fenwei%2Fneedle-ai-provider?style=flat&label=AI%20SDK)](https://www.npmjs.com/package/@fenwei/needle-ai-provider)
 [![@fenwei/pi-provider-needle version](https://img.shields.io/npm/v/%40fenwei%2Fpi-provider-needle?style=flat&label=pi)](https://www.npmjs.com/package/@fenwei/pi-provider-needle)
 [![MIT license](https://img.shields.io/github/license/fenwei-dev/needle.js?style=flat)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-needle.fenwei.dev-blue?style=flat)](https://needle.fenwei.dev/)
+[![Documentation](https://img.shields.io/badge/docs-needle.js.org-blue?style=flat)](https://needle.js.org/)
 
 Needle 2 inference for TypeScript with a pure TypeScript reference backend, a TypeGPU-resident WebGPU engine, agent-framework integrations, and an educational implementation guide.
 
 > **Unofficial implementation:** This project is independent and is not affiliated with or endorsed by Cactus Compute.
 
-**Documentation:** <https://needle.fenwei.dev/>
+**Documentation:** <https://needle.js.org/>
 
 ## Workspaces
 

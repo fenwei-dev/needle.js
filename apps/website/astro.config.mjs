@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "astro/config";
 
 export default defineConfig({
-  site: "https://needle.fenwei.dev",
+  site: "https://needle.js.org",
   integrations: [
     preact(),
     starlight({
